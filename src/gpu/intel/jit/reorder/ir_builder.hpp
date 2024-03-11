@@ -26,6 +26,7 @@
 #include "gpu/intel/jit/ir/kernel_info.hpp"
 #include "gpu/intel/jit/ir/tensor.hpp"
 #include "gpu/intel/jit/reorder/config.hpp"
+#include "gpu/intel/jit/reorder/normalization.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -44,7 +45,7 @@ public:
         , kernel_info_(kernel_info)
         , attr_(attr)
         , dst_md_(dst_md) {
-        normalize_reorder_layouts(src_layout_, dst_layout_);
+        reorder::normalize(src_layout_, dst_layout_);
         build();
     }
 
@@ -71,7 +72,6 @@ private:
             const std::vector<int> &loop_blocks,
             const std::vector<int> &tg_blocks);
 
-    static void normalize_reorder_layouts(layout_t &a, layout_t &b);
     static dim_t max_tile_size(
             const hw_t &hw, const layout_t &dst, const layout_t &src) {
         // XeHPC is fine with 2048 bytes, XeHPG and below can fit 2048 bytes if

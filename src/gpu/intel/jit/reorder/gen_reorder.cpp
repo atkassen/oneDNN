@@ -27,6 +27,7 @@
 #include "gpu/intel/jit/ir/post_ops.hpp"
 #include "gpu/intel/jit/ir/tensor_config.hpp"
 #include "gpu/intel/jit/reorder/config.hpp"
+#include "gpu/intel/jit/reorder/normalization.hpp"
 #include "gpu/intel/jit/reorder/reorder_kernel.hpp"
 #include "gpu/intel/jit/utils/utils.hpp"
 #include "gpu/intel/ocl/ocl_utils.hpp"
