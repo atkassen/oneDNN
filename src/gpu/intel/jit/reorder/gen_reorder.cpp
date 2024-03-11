@@ -125,33 +125,8 @@ status_t gen_reorder_t::pd_t::init(impl::engine_t *engine,
             VERBOSE_RUNTIMEDIM_UNSUPPORTED);
     VDISPATCH_REORDER(src_mdw.ndims() == dst_mdw.ndims(),
             VERBOSE_INCONSISTENT_MDS, "src", "dst");
-    int ndims = src_mdw.ndims();
-
-    layout_t src_layout {src_mdw, /*do_normalize=*/false};
-    layout_t dst_layout {dst_mdw, /*do_normalize=*/false};
-
-    VDISPATCH_REORDER(!(src_layout.elems() == 0 || dst_layout.elems() == 0),
-            VERBOSE_EMPTY_TENSOR, "src_layout || dst_layout");
-
-    std::vector<dim_t> dims(ndims);
-    for (int i = 0; i < ndims; ++i)
-        dims[i] = std::max(src_layout.dim(i), dst_layout.dim(i));
-
-    auto check_layout = [&](const layout_t &l) {
-        for (auto &eb : l.enumerated_blocks()) {
-            auto &b = eb.second;
-            if (l.is_outermost(eb)) {
-                dim_t inner = l.dim(b.dim_idx) / b.block;
-                if (dims[b.dim_idx] % inner) return false;
-            }
-        }
-        return true;
-    };
-
-    VDISPATCH_REORDER(
-            check_layout(src_layout), VERBOSE_UNSUPPORTED_TENSOR_LAYOUT, "src");
-    VDISPATCH_REORDER(
-            check_layout(dst_layout), VERBOSE_UNSUPPORTED_TENSOR_LAYOUT, "dst");
+    VDISPATCH_REORDER(src_mdw.nelems(true) != 0, VERBOSE_EMPTY_TENSOR, "src");
+    VDISPATCH_REORDER(dst_mdw.nelems(true) != 0, VERBOSE_EMPTY_TENSOR, "dst");
     VDISPATCH_REORDER(compute_engine->mayiuse_ngen_kernels(),
             VERBOSE_UNSUPPORTED_DEVICE_FEATURE, "ngen_kernels");
 
@@ -159,6 +134,8 @@ status_t gen_reorder_t::pd_t::init(impl::engine_t *engine,
             = utils::downcast<gpu_primitive_attr_t *>(attr()->gpu_attr_.get());
     hw_t hw(engine);
     exec_config_t exec_cfg(hw);
+    layout_t src_layout {src_mdw, /*do_normalize=*/false};
+    layout_t dst_layout {dst_mdw, /*do_normalize=*/false};
     exec_cfg.set_regs(hw.prefer_large_grf(gpu_attr) ? 256 : 128);
     exec_cfg.set_simd(16);
     cfg = std::make_shared<reorder_config_t>(exec_cfg, src_layout, dst_layout);
@@ -172,25 +149,17 @@ status_t gen_reorder_t::pd_t::init(impl::engine_t *engine,
 
 status_t gen_reorder_t::pd_t::init_kernel_info() {
     tensor_config_t tensor_cfg;
-    tensor_cfg.add_tensor("src", DNNL_ARG_SRC, true, false,
-            cfg->src_layout().user(), cfg->src_layout().user());
-    tensor_cfg.add_tensor("dst", DNNL_ARG_DST, true, true,
-            cfg->dst_layout().user(), cfg->dst_layout().user());
+    tensor_cfg.add_tensor(
+            "src", DNNL_ARG_SRC, true, false, cfg->src_layout().compute());
+    tensor_cfg.add_tensor(
+            "dst", DNNL_ARG_DST, true, true, cfg->dst_layout().compute());
 
     // TODO: set input/output channels here to enable per-channel ZPs/scales
     init_extra_tensors(cfg->zp_cfg(), *attr(), nullptr, *dst_md(), /*ic=*/1,
             /*oc=*/1, tensor_cfg);
 
     kernel_info = std::make_shared<kernel_info_t>();
-    auto nd_range = reorder_kernel_t<>::nd_range(cfg->exec_cfg(),
-            cfg->src_layout().user(), cfg->dst_layout().user());
-    auto global_range = nd_range.global_range();
-    constexpr int max = std::numeric_limits<int>::max();
-    // This case *probably* overflowed in int32 precision.
-    // Skip until we have a proper fix.
-    if (global_range[0] > max || global_range[1] > max || global_range[2] > max)
-        return status::unimplemented;
-    kernel_info->set_nd_range(nd_range);
+    kernel_info->set_nd_range(cfg->nd_range());
 
     // Initialize kernel arguments.
     for (auto &t : tensor_cfg.tensors()) {

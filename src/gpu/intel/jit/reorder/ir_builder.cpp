@@ -16,6 +16,7 @@
 
 #include "gpu/intel/jit/reorder/ir_builder.hpp"
 #include "gpu/intel/jit/reorder/normalization.hpp"
+#include "gpu/intel/jit/reorder/tiler.hpp"
 
 #include <algorithm>
 #include <array>
@@ -37,8 +38,6 @@
 #include "gpu/intel/jit/ir/reorder.hpp"
 #include "gpu/intel/jit/ir/tensor.hpp"
 #include "gpu/intel/jit/pass/pass.hpp"
-#include "gpu/intel/jit/utils/iterator.hpp"
-#include "gpu/intel/jit/utils/range.hpp"
 #include "gpu/intel/jit/utils/trace.hpp"
 
 namespace dnnl {
@@ -47,353 +46,32 @@ namespace gpu {
 namespace intel {
 namespace jit {
 
-dim_t reorder_ir_builder_t::count_block_messages(
-        const exec_config_t &exec_cfg, dim_t inner_bytes, dim_t iterations) {
-    const auto max_block_owords = exec_cfg.grf_size() / 2;
-    const auto oword_size = 16;
-    const auto owords_per_grf = exec_cfg.grf_size() / oword_size;
-
-    dim_t block_owords = max_block_owords / 2;
-    auto inner_owords = inner_bytes / oword_size;
-    dim_t messages = inner_owords / max_block_owords;
-    inner_owords -= messages * max_block_owords;
-    // If iterations != 1, tail block messages must end on a grf boundary
-    const dim_t lower_bound = iterations == 1 ? 1 : owords_per_grf;
-    for (; block_owords >= lower_bound; block_owords >>= 1) {
-        if (inner_owords >= block_owords) {
-            inner_owords -= block_owords;
-            messages++;
-        }
-    }
-    gpu_assert(inner_owords == 0);
-    return messages * iterations;
-}
-
-dim_t reorder_ir_builder_t::count_scattered_messages(
-        const exec_config_t &exec_cfg, dim_t inner_bytes, dim_t iterations) {
-    const auto max_block_items = exec_cfg.grf_size() / 2;
-    int item_size = 8;
-
-    // Find the largest uint size we can use
-    for (; item_size > 1; item_size >>= 1) {
-        if (inner_bytes % item_size == 0) break;
-    }
-
-    dim_t block_items = max_block_items / 2;
-    auto inner_items = (iterations * inner_bytes) / item_size;
-    dim_t messages = (inner_items + (block_items - 1)) / max_block_items;
-    inner_items -= std::min(inner_items, messages * max_block_items);
-    for (; block_items >= (dim_t)2; block_items >>= 1) {
-        if (inner_items > block_items / 2) {
-            inner_items -= std::min(inner_items, block_items);
-            messages++;
-        }
-    }
-    if (inner_items) messages++;
-    return messages;
-}
-
-dim_t reorder_ir_builder_t::message_latency(
-        const exec_config_t &exec_cfg, const layout_t &l, const tensor_t &t) {
-    const auto grf_size = exec_cfg.grf_size();
-    const int scattered_message_penalty = 4;
-    bool can_use_block_messages = true;
-    std::vector<dim_t> outer = t.dims();
-    dim_t inner_elems = 1;
-
-    for (auto &blk : l.blocks()) {
-        auto block = blk.block;
-        auto dim_idx = blk.dim_idx;
-        if (block == 1) continue;
-        if (outer[dim_idx] < block) {
-            if (block % outer[dim_idx] == 0) {
-                inner_elems *= outer[dim_idx];
-                outer[dim_idx] = 1;
-            }
-            break;
-        }
-
-        can_use_block_messages &= (outer[dim_idx] % block == 0);
-        inner_elems *= block;
-        outer[dim_idx] = utils::div_up(outer[dim_idx], block);
-    }
-
-    auto type_size = l.type().scalar().size();
-    auto inner_bytes = inner_elems * type_size;
-    auto iterations = tensor_t(outer).elems();
-    can_use_block_messages &= (inner_bytes % 16 == 0);
-    can_use_block_messages &= (iterations == 1 || inner_bytes % grf_size == 0);
-
-    if (inner_bytes == 0 || iterations == 0) return 0;
-
-    return can_use_block_messages
-            ? count_block_messages(exec_cfg, inner_bytes, iterations)
-            : count_scattered_messages(exec_cfg, inner_bytes, iterations)
-                    * scattered_message_penalty;
-}
-
-void reorder_ir_builder_t::compute_blocks(const exec_config_t &exec_cfg,
-        const layout_t &src, const layout_t &dst, std::vector<int> &iter_blocks,
-        std::vector<int> &loop_blocks, std::vector<int> &tg_blocks,
-        dim_t max_iter_tile_bytes, dim_t max_thr_tile_bytes) {
-    if (max_iter_tile_bytes <= 0)
-        max_iter_tile_bytes = max_tile_size(exec_cfg.hw(), dst, src);
-    if (max_thr_tile_bytes <= 0)
-        max_thr_tile_bytes = max_tile_size(exec_cfg.hw(), dst, src);
-
-    gpu_assert(src.ndims() == dst.ndims());
-    dim_idx_t ndims = src.ndims();
-    std::vector<dim_t> dims(ndims);
-    for (dim_idx_t i = 0; i < ndims; i++) {
-        dims[i] = std::max(src.dim(i), dst.dim(i));
-    }
-
-    // Pad src/dst layouts to match each other.
-    auto pad_layout = [&](const layout_t &l) {
-        std::vector<block_t> padded_blocks;
-        for (auto &eb : l.enumerated_blocks()) {
-            auto b = eb.second;
-            if (l.is_outermost(eb)) {
-                dim_t inner = l.dim(b.dim_idx) / b.block;
-                b.block = ir_utils::safe_divide(dims[b.dim_idx], inner);
-            }
-            padded_blocks.push_back(b);
-        }
-        return layout_t(
-                l.type(), ndims, 0, padded_blocks, /*do_normalize=*/false);
-    };
-    layout_t padded_src = pad_layout(src);
-    layout_t padded_dst = pad_layout(dst);
-    gpu_assert(ir_utils::is_equal(padded_src.dims(), padded_dst.dims()));
-
-    dim_t elems = padded_src.elems();
-    int max_type_size = std::max(src.type().size(), dst.type().size());
-    dim_t max_iter_tile_elems
-            = std::min(max_iter_tile_bytes / max_type_size, elems);
-    dim_t max_thr_tile_elems
-            = std::min(max_thr_tile_bytes / max_type_size, elems);
-
-    using tile_pair_t = std::array<tensor_t, 2>;
-
-    auto can_be_mapped = [](const layout_t &l, const tensor_t &t) {
-        std::vector<dim_t> rem_dims = t.dims();
-        for (auto &b : l.blocks()) {
-            auto &rem_dim = rem_dims[b.dim_idx];
-            if (rem_dim >= b.block) {
-                if (rem_dim % b.block != 0) return false;
-                rem_dim /= b.block;
-                continue;
-            }
-            if (b.block % rem_dim != 0) return false;
-            rem_dim = 1;
-        }
-        for (auto d : rem_dims)
-            gpu_assert(d == 1);
-        return true;
-    };
-
-    auto add_pseudo_dimension = [](const layout_t &l) {
-        auto layout_size = l.size();
-        return [=](const tensor_t &t) {
-            auto dims = t.dims();
-            dims.push_back(layout_size);
-            return tensor_t(dims);
-        };
-    };
-
-    auto mappable_tiles = [&](const tensor_t &t) {
-        return can_be_mapped(padded_src, t) && can_be_mapped(padded_dst, t);
-    };
-
-    auto merge_tiles = [](const tile_pair_t &p) {
-        auto ndims = p[0].ndims() - 1;
-        std::vector<dim_t> dims(ndims);
-        for (dim_idx_t i = 0; i < ndims; ++i)
-            dims[i] = std::max(p[0](i), p[1](i));
-        return tensor_t(dims);
-    };
-
-    auto take_smaller = [](const tensor_t &a, const tensor_t &b) {
-        return a.elems() < b.elems();
-    };
-
-    // Incrementally increase subtiles in src and dst. The goal is to find the
-    // maximum src/dst tiles so that the final combined tile covers dense
-    // regions as big as possible in src/dst layouts.
-    std::vector<tensor_t> candidate_tiles;
-    auto a_tiles = inner_tiles(padded_src.blocks(), padded_src.ndims())
-            | filter(mappable_tiles)
-            | transform(add_pseudo_dimension(padded_src));
-    auto b_tiles = inner_tiles(padded_dst.blocks(), padded_dst.ndims())
-            | filter(mappable_tiles)
-            | transform(add_pseudo_dimension(padded_dst));
-    auto tiles = merge(a_tiles, b_tiles, take_smaller) | transform(merge_tiles);
-    for (auto tile : tiles) {
-        if (tile.elems() > max_thr_tile_elems) break;
-        candidate_tiles.push_back(tile);
-    }
-    gpu_assert(!candidate_tiles.empty());
-
-    const auto eu_count = exec_cfg.hw().eu_count();
-    std::sort(candidate_tiles.begin(), candidate_tiles.end(),
-            [&](const tensor_t &a, const tensor_t &b) {
-                auto a_threads_reqd = padded_src.elems() / a.elems();
-                auto b_threads_reqd = padded_src.elems() / b.elems();
-                auto a_eu_util = utils::div_up(a_threads_reqd, eu_count);
-                auto b_eu_util = utils::div_up(b_threads_reqd, eu_count);
-                auto a_msg_load = message_latency(exec_cfg, padded_src, a)
-                        + message_latency(exec_cfg, padded_dst, a);
-                auto b_msg_load = message_latency(exec_cfg, padded_src, b)
-                        + message_latency(exec_cfg, padded_dst, b);
-
-                // Choose tiles with less message overhead per thread
-                if (a_eu_util * a_msg_load != b_eu_util * b_msg_load)
-                    return (a_eu_util * a_msg_load < b_eu_util * b_msg_load);
-
-                // Choose tiles with more bytes per message
-                if (a.elems() * b_msg_load != b.elems() * a_msg_load)
-                    return (a.elems() * b_msg_load > b.elems() * a_msg_load);
-
-                // If all else fails, go with the bigger tile
-                return a.elems() > b.elems();
-            });
-
-    tensor_t thr_tile = candidate_tiles[0];
-    tensor_t iter_tile;
-    for (auto &tile : candidate_tiles) {
-        if (tile.elems() > max_iter_tile_elems || !thr_tile.is_divisible(tile))
-            continue;
-        if (iter_tile.is_empty() || tile.elems() > iter_tile.elems())
-            iter_tile = tile;
-    }
-
-    gpu_assert(!iter_tile.is_empty());
-    std::vector<int> thr_blocks(thr_tile.dims().begin(), thr_tile.dims().end());
-    iter_blocks.assign(iter_tile.dims().begin(), iter_tile.dims().end());
-
-    gpu_assert(utils::array_product(iter_blocks) <= max_iter_tile_elems);
-    gpu_assert(utils::array_product(thr_blocks) <= max_thr_tile_elems);
-
-    // Initialize loop blocks.
-    loop_blocks.resize(ndims, 1);
-    for (dim_idx_t i = 0; i < ndims; i++) {
-        loop_blocks[i] = ir_utils::safe_divide(thr_blocks[i], iter_blocks[i]);
-    }
-
-    // Initialize thread group blocks.
-    // Heuristic: try to split outer dimension and assign its
-    // inner part to the thread group. This may give better
-    // bandwidth utilization on XeHP/XeHPG.
-    tg_blocks.resize(ndims, 1);
-    const int tg_factor = 2;
-    for (dim_idx_t i = 0; i < ndims; i++) {
-        dim_t outer = utils::div_up(dims[i], thr_blocks[i]);
-        if (outer % tg_factor == 0) {
-            tg_blocks[i] = tg_factor;
-            break;
-        }
-    }
-}
-
-void reorder_ir_builder_t::compute_grid(const layout_t &src,
-        const layout_t &dst, const std::vector<int> &iter_blocks,
-        const std::vector<int> &loop_blocks, const std::vector<int> &tg_blocks,
-        grid_info_t &kernel_grid, grid_info_t &tg_grid,
-        std::vector<dim_idx_t> *dim2grid) {
-    dim_idx_t ndims = src.ndims();
-    std::vector<dim_t> dims(ndims);
-    for (dim_idx_t i = 0; i < ndims; i++) {
-        dims[i] = std::max(src.dim(i), dst.dim(i));
-    }
-
-    if (dim2grid) dim2grid->resize(ndims, dim_idx::invalid);
-
-    const int grid_ndims = 3;
-    std::vector<dim_t> kernel_grid_dims(grid_ndims, 1);
-    std::vector<dim_t> tg_grid_dims(grid_ndims, 1);
-    dim_idx_t grid_idx = 0;
-    dim_idx_t max_grid_idx = grid_ndims - 1;
-    for (dim_idx_t i = 0; i < ndims; i++) {
-        if (dim2grid) (*dim2grid)[i] = grid_idx;
-        dim_t outer = utils::div_up(
-                dims[i], iter_blocks[i] * loop_blocks[i] * tg_blocks[i]);
-        tg_grid_dims[grid_idx] *= tg_blocks[i];
-        kernel_grid_dims[grid_idx] *= outer;
-        if (outer != 1 && grid_idx != max_grid_idx) grid_idx++;
-    }
-    auto &tg_idxs = ir_builder_t::tg_idxs();
-    kernel_grid = grid_info_t(kernel_grid_dims,
-            std::vector<expr_t>(tg_idxs.begin(), tg_idxs.end()));
-    tg_grid = grid_info_t(tg_grid_dims, "thr_idx");
-}
-
-compute::nd_range_t reorder_ir_builder_t::nd_range(
-        const exec_config_t &exec_cfg, layout_t src, layout_t dst) {
-    const int simd = exec_cfg.simd();
-    std::vector<int> iter_blocks;
-    std::vector<int> loop_blocks;
-    std::vector<int> tg_blocks;
-    reorder::normalize(src, dst);
-    compute_blocks(exec_cfg, src, dst, iter_blocks, loop_blocks, tg_blocks);
-    grid_info_t kernel_grid;
-    grid_info_t tg_grid;
-    compute_grid(src, dst, iter_blocks, loop_blocks, tg_blocks, kernel_grid,
-            tg_grid);
-    compute::range_t global = compute::range_t::empty(kernel_grid.ndims());
-    compute::range_t local = compute::range_t::empty(kernel_grid.ndims());
-    for (dim_idx_t i = 0; i < kernel_grid.ndims(); i++) {
-        global[i] = kernel_grid[i] * tg_grid[i];
-        local[i] = tg_grid[i];
-        if (i == 0) {
-            global[i] *= simd;
-            local[i] *= simd;
-        }
-    }
-    return compute::nd_range_t(global, local);
-}
-
 void reorder_ir_builder_t::build() {
-    std::vector<int> iter_blocks;
-    std::vector<int> loop_blocks;
-    std::vector<int> tg_blocks;
-    compute_blocks(cfg_.exec_cfg(), src_layout_, dst_layout_, iter_blocks,
-            loop_blocks, tg_blocks);
+    const auto &tiles = cfg_.tiles();
+    const auto &thr_tile = tiles.front();
 
-    int max_iters = 10;
-    dim_t cur_iter_bytes
-            = max_tile_size(cfg_.exec_cfg().hw(), dst_layout_, src_layout_);
-    for (int i = 0; i < max_iters; i++) {
-        if (try_build(iter_blocks, loop_blocks, tg_blocks)) {
+    for (const auto &iter_tile : tiles) {
+        if (try_build(thr_tile, iter_tile)) {
+            auto tg_dims = thr_tile.dims();
+            auto tg_dim = cfg_.tg_dim();
+            if (tg_dim < thr_tile.ndims())
+                tg_dims[tg_dim] *= reorder_config_t::tg_factor;
+            tensor_t tg_tile(tg_dims);
+
             gpu_info() << "Reorder configuration:";
-            gpu_info() << "  Source layout:              " << src_layout_;
-            gpu_info() << "  Destination layout:         " << dst_layout_;
-            gpu_info() << "  Iteration blocks:           "
-                       << ir_utils::make_seq_print_helper(iter_blocks, " x ");
-            gpu_info() << "  Loop blocks:                "
-                       << ir_utils::make_seq_print_helper(loop_blocks, " x ");
-            gpu_info() << "  Thread group blocks:        "
-                       << ir_utils::make_seq_print_helper(tg_blocks, " x ");
+            gpu_info() << "  Source layout:            " << src_layout_;
+            gpu_info() << "  Destination layout:       " << dst_layout_;
+            gpu_info() << "  Iteration tile:           " << thr_tile.str();
+            gpu_info() << "  Loop tile:                " << iter_tile.str();
+            gpu_info() << "  Thread group tile:        " << tg_tile.str();
             return;
-        }
-
-        cur_iter_bytes /= 2;
-        while (cur_iter_bytes >= 1) {
-            std::vector<int> new_iter_blocks;
-            compute_blocks(cfg_.exec_cfg(), src_layout_, dst_layout_,
-                    new_iter_blocks, loop_blocks, tg_blocks, cur_iter_bytes);
-            if (!ir_utils::is_equal(new_iter_blocks, iter_blocks)) {
-                iter_blocks = std::move(new_iter_blocks);
-                break;
-            }
-            cur_iter_bytes /= 2;
         }
     }
     gpu_error_not_expected();
 }
 
-bool reorder_ir_builder_t::try_build(const std::vector<int> &iter_blocks,
-        const std::vector<int> &loop_blocks,
-        const std::vector<int> &tg_blocks) {
+bool reorder_ir_builder_t::try_build(
+        const tensor_t &thr_tile, const tensor_t &iter_tile) {
     constraint_set_t init_cset;
 
     dim_idx_t ndims = src_layout_.ndims();
@@ -403,18 +81,11 @@ bool reorder_ir_builder_t::try_build(const std::vector<int> &iter_blocks,
         vars.push_back(var_t::make(type_t::s32(), std::string(1, letter)));
     }
 
-    std::vector<dim_idx_t> dim2grid;
-    compute_grid(src_layout_, dst_layout_, iter_blocks, loop_blocks, tg_blocks,
-            kernel_grid_, tg_grid_, &dim2grid);
-
     std::vector<stmt_t> init_stmts;
-    init_kernel_grid(kernel_grid_, tg_grid_, cfg_.exec_cfg().simd(), init_cset,
-            init_stmts);
+    init_kernel_grid(cfg_.kernel_grid(), cfg_.thread_group_grid(),
+            cfg_.exec_cfg().simd(), init_cset, init_stmts);
 
-    std::vector<dim_t> vdims(ndims);
-    for (dim_idx_t i = 0; i < ndims; i++) {
-        vdims[i] = std::max(src_layout_.dim(i), dst_layout_.dim(i));
-    }
+    const auto &vdims = cfg_.vdims();
     std::unordered_map<std::string, dim_t> vdim_map;
     for (dim_idx_t i = 0; i < ndims; i++) {
         vdim_map[vars[i].as<var_t>().name] = vdims[i];
@@ -436,40 +107,43 @@ bool reorder_ir_builder_t::try_build(const std::vector<int> &iter_blocks,
     dst_view.set_tlayout(dst_layout_);
     dst_view.set_tmasks(vdim_map);
 
-    gemm_schedule_t schedule(init_cset, kernel_grid_, tg_grid_);
+    gemm_schedule_t schedule(
+            init_cset, cfg_.kernel_grid(), cfg_.thread_group_grid());
 
     schedule.set_view(src_view);
     schedule.set_view(dst_view);
 
+    const auto &grid_map = cfg_.grid_map();
     std::array<std::vector<expr_t>, 3> fused_idxs;
     for (dim_idx_t i = 0; i < ndims; i++) {
         std::vector<expr_t> ordered;
         auto v = vars[i];
-        if (iter_blocks[i] != 1) {
+        if (iter_tile(i) != 1) {
             expr_t outer, inner;
-            schedule.split(v, iter_blocks[i], outer, inner);
+            schedule.split(v, iter_tile(i), outer, inner);
             schedule.tensorize(inner);
             v = outer;
             ordered.insert(ordered.begin(), outer);
         }
-        if (loop_blocks[i] != 1) {
+        if (iter_tile(i) != thr_tile(i)) {
             if (!ordered.empty()) ordered.erase(ordered.begin());
             expr_t outer, inner;
-            schedule.split(v, loop_blocks[i], outer, inner);
+            dim_t inner_bound = thr_tile(i) / iter_tile(i);
+            schedule.split(v, inner_bound, outer, inner);
             v = outer;
             ordered.insert(ordered.begin(), inner);
             ordered.insert(ordered.begin(), outer);
         }
-        if (tg_blocks[i] != 1) {
+        if (i == cfg_.tg_dim()) {
             if (!ordered.empty()) ordered.erase(ordered.begin());
             expr_t outer, inner;
-            schedule.split(v, tg_blocks[i], outer, inner);
-            schedule.bind(inner, tg_grid_.idx(dim2grid[i]));
+            schedule.split(v, reorder_config_t::tg_factor, outer, inner);
+            schedule.bind(inner, cfg_.thread_group_grid().idx(grid_map[i]));
             v = outer;
             ordered.insert(ordered.begin(), inner);
             ordered.insert(ordered.begin(), outer);
         }
-        fused_idxs[dim2grid[i]].push_back(v);
+        fused_idxs[grid_map[i]].push_back(v);
         schedule.reorder(ordered);
     }
 
@@ -477,15 +151,16 @@ bool reorder_ir_builder_t::try_build(const std::vector<int> &iter_blocks,
         auto &vec = fused_idxs[i];
         if (vec.empty()) continue;
         auto var = (vec.size() == 1 ? vec[0] : schedule.fuse(vec));
-        schedule.bind(var, kernel_grid_.idx(i));
+        schedule.bind(var, cfg_.kernel_grid().idx(i));
     }
 
     schedule.finalize();
 
-    auto thr_tile = schedule.thr_view_tile(src_view, /*is_relative=*/false);
+    auto thr_view_tile
+            = schedule.thr_view_tile(src_view, /*is_relative=*/false);
 
-    auto src_thr_view = src_view.create_sub_view(thr_tile);
-    auto dst_thr_view = dst_view.create_sub_view(thr_tile);
+    auto src_thr_view = src_view.create_sub_view(thr_view_tile);
+    auto dst_thr_view = dst_view.create_sub_view(thr_view_tile);
 
     auto src_buf = kernel_info_.arg_var(0);
     auto dst_buf = kernel_info_.arg_var(1);
@@ -530,8 +205,8 @@ bool reorder_ir_builder_t::try_build(const std::vector<int> &iter_blocks,
         post_op_context_t post_op_ctx(*attr_, cfg_.zp_cfg(), schedule,
                 kernel_info_, *dst_md_, *dst_md_, view_mapper);
         write_stmt = create_epilogue_stmt(cfg_.exec_cfg(), ir_ctx, schedule,
-                /*force_c_reorder=*/true, post_op_ctx, thr_tile, read_layout,
-                dst_buf, reg_buf, write_buf_size);
+                /*force_c_reorder=*/true, post_op_ctx, thr_view_tile,
+                read_layout, dst_buf, reg_buf, write_buf_size);
     } else if (read_layout != write_layout) {
         auto tmp_buf = ir_ctx.create_tmp_var(type_t::byte_ptr(), "tmp");
         allocs.push_back(

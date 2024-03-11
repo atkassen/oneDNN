@@ -21,6 +21,8 @@
 #include <sstream>
 
 #include "gpu/intel/jit/ir/config.hpp"
+#include "gpu/intel/jit/reorder/normalization.hpp"
+#include "gpu/intel/jit/reorder/tiler.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -31,6 +33,8 @@ namespace jit {
 // Parameters for kernel generation.
 class reorder_config_t : public prim_config_t {
 public:
+    static constexpr int tg_factor = 2;
+
     std::string str() const override {
         std::ostringstream ss;
         ss << src_layout().user().str() << " -> " << dst_layout().user().str();
@@ -47,11 +51,20 @@ public:
     int pad_block(const pvar_t &d) const override { return 0; }
 
     reorder_config_t(
-            const exec_config_t &ec, const layout_t &src, const layout_t &dst) {
-        src_layout().set_user(src);
-        dst_layout().set_user(dst);
-        set_exec_cfg(ec);
-    }
+            const exec_config_t &ec, const layout_t &src, const layout_t &dst);
+
+    const std::vector<tensor_t> &tiles() const { return tiles_; }
+    const std::vector<dim_idx_t> &grid_map() const { return grid_map_; }
+    const compute::nd_range_t &nd_range() const { return nd_range_; }
+    dim_idx_t tg_dim() const { return tg_tile_idx_; }
+    const std::vector<dim_t> &vdims() const { return vdims_; }
+
+private:
+    std::vector<tensor_t> tiles_;
+    std::vector<dim_t> vdims_;
+    std::vector<dim_idx_t> grid_map_;
+    compute::nd_range_t nd_range_;
+    dim_idx_t tg_tile_idx_ = 0;
 };
 
 } // namespace jit
