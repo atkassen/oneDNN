@@ -15,8 +15,7 @@
 *******************************************************************************/
 
 #include "gpu/intel/jit/reorder/normalization.hpp"
-
-#include "gpu/intel/jit/utils/range.hpp"
+#include "gpu/intel/compute/block_manipulation.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -25,240 +24,344 @@ namespace intel {
 namespace jit {
 namespace reorder {
 
-struct normalization_stage_t {
-    int idx;
-    block_t curr, last;
+namespace merge {
+struct type_t {
+    dim_t block;
+    bool complete;
+
+    constexpr bool operator==(const type_t &other) const {
+        return block == other.block && complete == other.complete;
+    }
+};
+
+constexpr type_t undef {0, true};
+constexpr type_t none {1, true};
+} // namespace merge
+
+struct tile_info_t {
+    size_t idx;
+    block_t outer, inner;
     std::array<dim_t, 2> tile;
+    merge::type_t merge;
 
-    bool is_dense() const { return curr.stride == last.stride * last.block; }
+    tile_info_t(size_t idx, block_t outer, block_t inner,
+            std::array<dim_t, 2> tile, merge::type_t merge = merge::undef)
+        : idx(idx), outer(outer), inner(inner), tile(tile), merge(merge) {}
 
-    dim_t elems() const { return tile[0]; }
-
-    normalization_stage_t() = default;
-    normalization_stage_t(int idx, const block_t &curr, const block_t &last,
-            std::vector<dim_t> tile)
-        : idx(idx)
-        , curr(curr)
-        , last(last)
-        , tile({tile[curr.dim_idx], tile[last.dim_idx]}) {}
+    bool is_dense() const { return outer.stride == inner.stride * inner.block; }
 };
 
-struct merge_info_t {
-    enum class merge_direction_t { none = 0, forward, backward };
-
-    int iter_idx;
-    merge_direction_t direction;
-
-    merge_info_t(int iter_idx, merge_direction_t direction)
-        : iter_idx(iter_idx), direction(direction) {}
-};
-
-merge_info_t::merge_direction_t merge_direction(
-        const normalization_stage_t &l, const normalization_stage_t &r) {
-    using direction_t = merge_info_t::merge_direction_t;
-    if (l.curr.dim_idx != r.curr.dim_idx) return direction_t::none;
-    if (l.last.dim_idx != r.last.dim_idx) return direction_t::none;
-    if (l.tile[0] != r.tile[0]) return direction_t::none;
-    if (l.curr.block == r.curr.block
-            && l.tile[1] * l.last.block == r.tile[1] * r.last.block)
-        return direction_t::backward;
-    if (l.tile[1] == r.tile[1] && l.last.block == r.last.block)
-        return direction_t::forward;
-    return direction_t::none;
+std::ostream &operator<<(std::ostream &out, const tile_info_t &info) {
+    return out << info.idx << ' ' << info.outer.str() << ' ' << info.inner.str()
+               << ' ' << info.tile[0] << 'x' << info.tile[1]
+               << " block: " << info.merge.block;
 }
 
-struct layout_normalization_t {
-    using blocks_t = std::vector<block_t>;
-    using block_iterator_t = typename blocks_t::const_iterator;
-    using stage_t = normalization_stage_t;
+inline bool mask_set(uint32_t bits, uint32_t mask) {
+    return (bits & mask) == mask;
+}
 
-    struct iterator_t {
-        bool operator==(const iterator_t &o) const { return curr_ == o.curr_; }
-        bool operator!=(const iterator_t &o) const { return !operator==(o); }
-        stage_t operator*() const { return {idx_, *curr_, *last_, tile_}; }
-        iterator_t &operator++() {
-            if (curr_ == end_) return *this;
-            auto blk = *last_;
-            tile_[blk.dim_idx] *= blk.block;
-            last_ = curr_;
-            ++curr_;
-            ++idx_;
-            return *this;
+inline bool bit_set(uint32_t bits, dim_idx_t index) {
+    gpu_assert(index < 32);
+    return mask_set(bits, 1 << index);
+}
+
+void compress(std::vector<uint32_t> &bits, uint32_t mask) {
+    // from Hacker's Delight 7-4
+    uint32_t mk = ~mask << 1, mp, mv[5], t;
+
+    for (auto &b : bits)
+        b &= mask;
+
+    for (int i = 0; i < 5; ++i) {
+        mp = mk ^ (mk << 1);
+        mp = mp ^ (mp << 2);
+        mp = mp ^ (mp << 4);
+        mp = mp ^ (mp << 8);
+        mp = mp ^ (mp << 16);
+        mv[i] = mp & mask;
+        mask = (mask ^ mv[i]) | (mv[i] >> (1 << i));
+        mk = mk & ~mp;
+    }
+
+    for (auto &b : bits) {
+        for (int i = 0; i < 5; ++i) {
+            t = b & mv[i];
+            b = (b ^ t) | (t >> (1 << i));
         }
+    }
+}
 
-        iterator_t(dim_idx_t ndims, block_iterator_t it, block_iterator_t end)
-            : curr_(it == end ? end : it + 1)
-            , last_(it)
-            , end_(end)
-            , idx_(0)
-            , tile_(ndims, 1) {}
+void compress(uint32_t &bits, uint32_t mask) {
+    std::vector<uint32_t> bits_vec = {bits};
+    compress(bits_vec, mask);
+    bits = bits_vec[0];
+}
 
-    private:
-        block_iterator_t curr_, last_, end_;
-        int idx_;
-        std::vector<dim_t> tile_;
+merge::type_t get_merge(const std::vector<tile_info_t> &infos,
+        uint32_t broadcast_mask, uint32_t merge_mask) {
+    if (infos.empty()) return merge::none;
+
+    auto merge_ok = [&](dim_idx_t i, dim_idx_t j) {
+        return !(bit_set(broadcast_mask, i) ^ bit_set(broadcast_mask, j))
+                && bit_set(merge_mask, i) && bit_set(merge_mask, j);
+    };
+    const auto &ref = infos[0];
+    if (!merge_ok(ref.inner.dim_idx, ref.outer.dim_idx) || !ref.is_dense())
+        return merge::none;
+    auto get_info_merge = [&](const tile_info_t &info) {
+        if (!info.is_dense()) return merge::none;
+        if (info.inner.dim_idx != ref.inner.dim_idx) return merge::none;
+        if (info.outer.dim_idx != ref.outer.dim_idx) return merge::none;
+        if (info.tile[0] != ref.tile[0]) return merge::none;
+        if (info.tile[1] != ref.tile[1]) return merge::none;
+        auto block = math::gcd(info.outer.block, ref.outer.block);
+        bool complete
+                = utils::everyone_is(block, info.outer.block, ref.outer.block);
+        return merge::type_t {block, complete};
     };
 
-    int ndims() const { return ndims_; }
-    const blocks_t &blocks() const { return blocks_; }
-
-    bool empty() const { return begin() == end(); }
-    bool contains_dim(dim_idx_t dim_idx) const {
-        for (auto &blk : blocks_)
-            if (blk.dim_idx == dim_idx) return true;
-        return false;
+    merge::type_t merge = merge::undef;
+    for (size_t i = 1; i < infos.size(); ++i) {
+        auto info_merge = get_info_merge(infos[i]);
+        merge = {math::gcd(merge.block, info_merge.block),
+                merge.complete && info_merge.complete};
+        if (merge == merge::none) return merge::none;
     }
+    return merge;
+}
 
-    void merge(std::vector<merge_info_t> merges) {
-        using direction_t = merge_info_t::merge_direction_t;
-        if (empty()) {
-            if (blocks_.empty()) blocks_.emplace_back(0, 1, 1);
-            return;
-        }
-
-        std::sort(merges.begin(), merges.end(),
-                [](const merge_info_t &l, const merge_info_t &r) {
-                    return l.iter_idx < r.iter_idx;
-                });
-        auto merge_it = merges.begin();
-        auto merge_end = merges.end();
-        std::vector<block_t> blocks;
-        block_t last = (*begin()).last;
-        for (auto s : *this) {
-            if (merge_it != merge_end && merge_it->iter_idx == s.idx) {
-                if (merge_it->direction == direction_t::backward)
-                    s.curr.dim_idx = last.dim_idx;
-                s.curr.block *= last.block;
-                s.curr.stride = last.stride;
-                ++merge_it;
-            } else
-                blocks.push_back(last);
-            last = s.curr;
-        }
-        blocks.push_back(last);
-        blocks_ = std::move(blocks);
-    }
-
-    void reindex(int ndims, const std::vector<int> &map) {
-        ndims_ = ndims;
-        for (auto &blk : blocks_)
-            blk.dim_idx = map[blk.dim_idx];
-    }
-
-    layout_t layout() const {
-        return {type_, ndims_, offset_, blocks_, /*do_normalize=*/false};
-    }
-
-    iterator_t begin() const {
-        return {ndims_, blocks_.begin(), blocks_.end()};
-    }
-    iterator_t end() const { return {ndims_, blocks_.end(), blocks_.end()}; }
-
-    layout_normalization_t(
-            const layout_t &layout, const std::vector<bool> &dim_empty)
-        : type_(layout.type())
-        , ndims_(layout.ndims())
-        , offset_(layout.offset())
-        , blocks_(normalized_blocks(layout, dim_empty)) {}
-
-private:
-    static bool can_combine(const block_t &last, const block_t &next) {
-        if (last.dim_idx != next.dim_idx) return false;
-        if (last.stride * last.block != next.stride) return false;
-        return true;
-    }
-
-    static std::vector<block_t> normalized_blocks(
-            const layout_t &layout, std::vector<bool> dim_empty) {
-        std::vector<block_t> normalized_blocks;
-        for (auto &eb : layout.enumerated_blocks()) {
-            auto &blk = eb.second;
-            if (blk.block != 1
-                    || (layout.is_outermost(eb) && !dim_empty[blk.dim_idx])) {
-                if (normalized_blocks.empty()
-                        || !can_combine(normalized_blocks.back(), blk)) {
-                    normalized_blocks.push_back(blk);
-                    dim_empty[blk.dim_idx] = true;
-                } else {
-                    normalized_blocks.back().block *= blk.block;
-                }
+layout_t reduce(const layout_t &src) {
+    std::vector<block_t> blocks;
+    for (auto &b : src.blocks()) {
+        if (b.block != 1) {
+            if (blocks.empty() || blocks.back().dim_idx != b.dim_idx
+                    || blocks.back().block * blocks.back().stride != b.stride) {
+                blocks.push_back(b);
+            } else {
+                blocks.back().block *= b.block;
             }
         }
-        return normalized_blocks;
+    }
+    if (blocks.empty()) blocks.emplace_back(0, 1, 1);
+    return {src.type(), src.ndims(), src.offset(), blocks,
+            /*do_normalize=*/false};
+}
+
+std::vector<tile_info_t> tile_info(
+        const layout_t &layout, uint32_t &blocking_mask) {
+    using tile_t = std::array<dim_t, 2>;
+    if (layout.blocks().empty()) return {};
+
+    auto cmp = [](const tile_info_t &l, const tile_info_t &r) {
+        return l.outer.dim_idx < r.outer.dim_idx;
+    };
+
+    uint32_t seen_dims = 0;
+    std::vector<dim_t> tile(layout.ndims(), 1);
+    std::vector<tile_info_t> infos;
+    infos.reserve(layout.blocks().size() - 1);
+    auto inner = layout.blocks()[0];
+    seen_dims |= (1 << inner.dim_idx);
+    for (size_t i = 1; i < layout.blocks().size(); ++i) {
+        const auto &outer = layout.blocks()[i];
+        uint32_t outer_dim_mask = 1 << outer.dim_idx;
+        blocking_mask |= seen_dims & outer_dim_mask;
+        seen_dims |= outer_dim_mask;
+        tile[inner.dim_idx] *= inner.block;
+
+        tile_t info_tile = {tile[outer.dim_idx], tile[inner.dim_idx]};
+        infos.emplace_back(i - 1, outer, inner, info_tile);
+        inner = outer;
+    }
+    std::stable_sort(infos.begin(), infos.end(), cmp);
+    return infos;
+}
+
+// Compute blocks resulting from performing merges
+std::vector<block_t> combine(std::vector<tile_info_t> info) {
+    std::vector<block_t> blocks;
+    if (info.empty()) return blocks;
+
+    auto cmp = [](const tile_info_t &l, const tile_info_t &r) {
+        return l.idx < r.idx;
+    };
+    std::sort(info.begin(), info.end(), cmp);
+
+    blocks.push_back(info[0].inner);
+    for (auto &i : info) {
+        if (i.merge.block > merge::none.block) {
+            auto &last = blocks.back();
+            last.block *= i.merge.block;
+            if (i.merge.complete) continue;
+            i.outer.block /= i.merge.block;
+            i.outer.stride *= i.merge.block;
+        }
+        blocks.push_back(i.outer);
     }
 
-    type_t type_;
-    dim_idx_t ndims_;
-    expr_t offset_;
-    blocks_t blocks_;
-};
+    return blocks;
+}
 
-// Given two layouts, finds an equivalent pair of simpler layouts by attempting
-// to combine consecutive blocks that appear in both layouts at the same level
-// of nesting for the dimensions to which the blocks belong. E.g.,
+// Find pairs of consecutive blocks which can be combined
+void find_merges(std::vector<std::vector<tile_info_t>> &infos,
+        const std::vector<uint32_t> &masks, uint32_t merge_mask) {
+    if (infos.empty()) return;
+
+    dim_idx_t ndims = 0;
+    using iterator_t = typename std::vector<tile_info_t>::iterator;
+    std::vector<iterator_t> it;
+    it.reserve(infos.size());
+    for (auto &info : infos) {
+        it.push_back(info.begin());
+        if (info.empty()) continue;
+        ndims = std::max(info.back().outer.dim_idx + 1, ndims);
+    }
+
+    uint32_t broadcast_mask = -1;
+    for (auto &mask : masks)
+        broadcast_mask &= mask;
+
+    std::vector<tile_info_t> tiles;
+    tiles.reserve(infos.size());
+    for (dim_idx_t i = 0; i < ndims; ++i) {
+        auto at_end = [=](const iterator_t &it, const iterator_t &end) {
+            return it == end || it->outer.dim_idx != i;
+        };
+
+        std::vector<iterator_t> end = it;
+        for (size_t j = 0; j < infos.size(); ++j) {
+            iterator_t &iter = end[j];
+            while (!at_end(iter, infos[j].end()))
+                ++iter;
+        }
+
+        auto get_active_idxs = [&]() {
+            using indices_t = std::vector<size_t>;
+            indices_t active_idxs;
+            for (size_t j = 0; j < infos.size(); ++j) {
+                if (!bit_set(masks[j], i)) continue;
+                active_idxs.push_back(j);
+            }
+            return active_idxs;
+        };
+
+        auto more_blocks = [&](const std::vector<size_t> &idxs) {
+            if (idxs.empty()) return false;
+            for (auto j : idxs)
+                if (it[j] == end[j]) return false;
+            return true;
+        };
+
+        auto active_idxs = get_active_idxs();
+        while (more_blocks(active_idxs)) {
+            tiles.clear();
+            for (auto j : active_idxs)
+                tiles.push_back(*it[j]);
+            auto merge = get_merge(tiles, broadcast_mask, merge_mask);
+            for (auto j : active_idxs)
+                (it[j]++)->merge = merge;
+        }
+
+        // Advance all iterators to the end, which are the beginnings for the
+        // next dimension.
+        std::swap(end, it);
+    }
+}
+
+// Find dimensions present in any normalized layout and construct map of new
+// dimension indices
+void relabel(std::vector<layout_t> &layouts, std::vector<uint32_t> &masks) {
+    uint32_t dim_mask = 0;
+    std::vector<uint32_t> missing_dim_masks;
+    missing_dim_masks.reserve(layouts.size());
+    for (auto &l : layouts) {
+        uint32_t layout_dim_mask = 0;
+        for (auto &b : l.blocks())
+            layout_dim_mask |= (1 << b.dim_idx);
+        missing_dim_masks.push_back(layout_dim_mask);
+        dim_mask |= layout_dim_mask;
+    }
+    compress(masks, dim_mask);
+
+    // Force at least one dimension
+    if (dim_mask == 0) dim_mask = 1;
+
+    for (auto &m : missing_dim_masks)
+        m = dim_mask & ~m;
+
+    std::vector<int> dim_map;
+    dim_idx_t ndims = 0;
+    while (dim_mask) {
+        dim_map.push_back(ndims);
+        ndims += dim_mask & 1;
+        dim_mask >>= 1;
+    }
+
+    for (size_t i = 0; i < layouts.size(); ++i) {
+        auto &l = layouts[i];
+        auto missing_dim_mask = missing_dim_masks[i];
+        std::vector<block_t> blocks;
+        blocks.reserve(l.blocks().size());
+        stride_t stride = 1;
+        for (auto b : l.blocks()) {
+            b.dim_idx = dim_map[b.dim_idx];
+            blocks.push_back(b);
+            stride = b.stride * b.block;
+        }
+
+        // Add missing dimensions as outer size-1 blocks in reverse lex order
+        size_t insertion_index = blocks.size();
+        while (missing_dim_mask) {
+            uint32_t dim_bit = missing_dim_mask & ~(missing_dim_mask - 1);
+            dim_idx_t dim_idx = dim_map[math::ilog2q(dim_bit)];
+            block_t b {dim_idx, 1, stride};
+            blocks.insert(blocks.begin() + insertion_index, b);
+            missing_dim_mask &= ~dim_bit;
+        }
+
+        l = {l.type(), ndims, l.offset(), blocks, /*do_normalize=*/false};
+    }
+}
+
+// Given a vector of layouts, finds an equivalent vector of simpler layouts by
+// attempting to combine consecutive blocks that appear in all layouts at the
+// same level of nesting for the dimensions to which the blocks belong. E.g.,
 //
-//             1.          2.
+//            1.           2.
 // 16a16b16c ---> 256a16c ---> 256a16b
 // 16c16a16b ---> 16c256a ---> 16b256a
 //
 // 1. The consecutive blocks 16a16b are repeated. For the first layout it
 //    appears with an inner tile 1x1x16, and 1x1x1 for the second. Because the
-//    ab-subtile is 1x1 for both and  the inner block (16b) is the same for
-//    both, we can combine these blocks.
-// 2. The b dimension no longer appears, so we can remove it from the layout and
-//    re-index the dimensions so that the new layouts are 2D.
-void normalize(layout_t &a, layout_t &b) {
-    using direction_t = merge_info_t::merge_direction_t;
-    int ndims = a.ndims();
-    auto cmp = [](const normalization_stage_t &a,
-                       const normalization_stage_t &b) {
-        return a.elems() <= b.elems();
-    };
-    auto dim_blocks = [](dim_idx_t dim_idx) {
-        return [=](const normalization_stage_t &s) {
-            return s.curr.dim_idx == dim_idx;
-        };
-    };
+//    AB-subtile is 1x1 for both and the inner block (16b) is the same for
+//    both, we can combine these blocks (in merge::type_t parlance, this is a
+//    forward merge). In other cases, where including the inner block into the
+//    tile creates equal subtiles, we can also combine blocks (backward merge).
+// 2. The B dimension no longer appears, so we can remove it from the layout and
+//    re-label the dimensions so that the new layouts are 2D.
+void normalize(std::vector<layout_t> &layouts,
+        std::vector<uint32_t> &broadcast_masks, bool maintain_blocks) {
+    std::vector<std::vector<tile_info_t>> infos;
+    gpu_assert(layouts.size() == broadcast_masks.size());
+    size_t ntensors = layouts.size();
+    uint32_t blocking_mask = 0;
+    infos.reserve(ntensors);
+    for (size_t i = 0; i < ntensors; ++i)
+        infos.push_back(tile_info(reduce(layouts[i]), blocking_mask));
+    if (!maintain_blocks) blocking_mask = 0;
+    find_merges(infos, broadcast_masks, ~blocking_mask);
 
-    std::vector<bool> empty_dimension(ndims, true);
-    for (auto &blk : a.blocks())
-        if (blk.block != 1) empty_dimension[blk.dim_idx] = false;
-    for (auto &blk : b.blocks())
-        if (blk.block != 1) empty_dimension[blk.dim_idx] = false;
-
-    layout_normalization_t a_normalization {a, empty_dimension};
-    layout_normalization_t b_normalization {b, empty_dimension};
-
-    std::vector<merge_info_t> a_merges;
-    std::vector<merge_info_t> b_merges;
-    // Find pairs of consecutive blocks which can be combined
-    for (int i = 0; i < ndims; ++i) {
-        auto dim_i_blocks = dim_blocks(i);
-        auto a_stages = a_normalization | filter(dim_i_blocks);
-        auto b_stages = b_normalization | filter(dim_i_blocks);
-        for (auto p : merge(a_stages, b_stages, cmp)) {
-            if (!p[0].is_dense() || !p[1].is_dense()) continue;
-            direction_t direction = merge_direction(p[0], p[1]);
-            if (direction == direction_t::none) continue;
-            a_merges.emplace_back(p[0].idx, direction);
-            b_merges.emplace_back(p[1].idx, direction);
-        }
+    for (size_t i = 0; i < layouts.size(); ++i) {
+        const auto &info = infos[i];
+        auto &layout = layouts[i];
+        auto blocks = combine(info);
+        if (!info.empty())
+            layout = {layout.type(), layout.ndims(), layout.offset(), blocks,
+                    /*do_normalize=*/false};
     }
-    a_normalization.merge(std::move(a_merges));
-    b_normalization.merge(std::move(b_merges));
 
-    // Find dimensions present in either normalized layout and construct map of
-    // new dimension indices
-    int curr_dim = 0;
-    std::vector<int> dim_map(ndims);
-    for (int i = 0; i < ndims; ++i)
-        if (a_normalization.contains_dim(i) || b_normalization.contains_dim(i))
-            dim_map[i] = curr_dim++;
-    a_normalization.reindex(curr_dim, dim_map);
-    b_normalization.reindex(curr_dim, dim_map);
-
-    a = a_normalization.layout();
-    b = b_normalization.layout();
+    relabel(layouts, broadcast_masks);
 }
 
 } // namespace reorder

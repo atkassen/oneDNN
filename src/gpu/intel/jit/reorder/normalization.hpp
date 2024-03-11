@@ -17,8 +17,6 @@
 #ifndef GPU_INTEL_JIT_REORDER_NORMALIZATION_HPP
 #define GPU_INTEL_JIT_REORDER_NORMALIZATION_HPP
 
-#include <array>
-
 #include "gpu/intel/jit/ir/tensor.hpp"
 
 namespace dnnl {
@@ -28,7 +26,22 @@ namespace intel {
 namespace jit {
 namespace reorder {
 
-void normalize(layout_t &a, layout_t &b);
+void normalize(std::vector<layout_t> &layouts, std::vector<uint32_t> &masks,
+        bool maintain_blocks = false);
+
+inline void normalize(
+        std::vector<layout_t> &layouts, bool maintain_blocks = false) {
+    std::vector<uint32_t> masks(layouts.size(), -1);
+    normalize(layouts, masks, maintain_blocks);
+}
+
+// TODO: remove this interface
+inline void normalize(layout_t &a, layout_t &b, bool maintain_blocks = false) {
+    std::vector<layout_t> layouts = {a, b};
+    normalize(layouts, maintain_blocks);
+    std::swap(a, layouts[0]);
+    std::swap(b, layouts[1]);
+};
 
 } // namespace reorder
 } // namespace jit
