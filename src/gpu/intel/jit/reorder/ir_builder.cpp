@@ -294,19 +294,6 @@ void reorder_ir_builder_t::compute_blocks(const exec_config_t &exec_cfg,
     }
 }
 
-void reorder_ir_builder_t::compute_blocks(const exec_config_t &exec_cfg,
-        const layout_t &src, const layout_t &dst, std::vector<int> &tile_blocks,
-        std::vector<int> &tg_blocks) {
-    std::vector<int> iter_blocks;
-    std::vector<int> loop_blocks;
-    compute_blocks(exec_cfg, src, dst, iter_blocks, loop_blocks, tg_blocks);
-    size_t n = iter_blocks.size();
-    tile_blocks.resize(n);
-    for (size_t i = 0; i < n; i++) {
-        tile_blocks[i] = iter_blocks[i] * loop_blocks[i];
-    }
-}
-
 void reorder_ir_builder_t::compute_grid(const layout_t &src,
         const layout_t &dst, const std::vector<int> &iter_blocks,
         const std::vector<int> &loop_blocks, const std::vector<int> &tg_blocks,

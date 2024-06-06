@@ -56,10 +56,6 @@ public:
             std::vector<int> &tg_blocks, dim_t max_iter_tile_bytes = 0,
             dim_t max_thr_tile_bytes = 0);
 
-    static void compute_blocks(const exec_config_t &exec_cfg,
-            const layout_t &src, const layout_t &dst,
-            std::vector<int> &tile_blocks, std::vector<int> &tg_blocks);
-
     static void compute_grid(const layout_t &src, const layout_t &dst,
             const std::vector<int> &iter_blocks,
             const std::vector<int> &loop_blocks,
