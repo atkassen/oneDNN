@@ -258,6 +258,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     int dst_type_size = ngen::getBytes(dst_type);
     int src_stride_bytes = src_stride * src_type_size;
     int dst_stride_bytes = dst_stride * dst_type_size;
+    bool dst_u4 = dst_type == ngen::DataType::u4;
     bool dst_b = ngen_is_b(dst_type);
     bool dst_d = ngen_is_dw(dst_type);
     bool dst_q = ngen_is_qw(dst_type);
@@ -321,6 +322,9 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
 
     using inst_mod_t = ngen::InstructionModifier;
     using reg_data_t = ngen::RegData;
+    auto shl4 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
+        host->eshl(mod, dst, src, 4);
+    };
     auto shl16 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         host->eshl(mod, dst, src, 16);
     };
@@ -337,6 +341,10 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     auto mov = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         host->emov(mod, dst, src);
     };
+    auto cvt_u8_to_u4x2 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
+        auto exec_size = mod.getExecSize();
+        host->sel(mod | host->lt, dst, src, 0xF);
+    };
 
     // bf16 -> f32:
     // - bf16 must be packed: use left shift instead.
@@ -351,6 +359,28 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             auto d = dst.subregister(
                     i, esize, dst_stride_bytes, ngen::DataType::ud);
             plan(shl16, esize, d(dst_stride), s(src_stride));
+        }
+        return;
+    }
+
+    // f -> i4
+    if (src_f && dst_u4) {
+        const int nregs = utils::div_up(width * (int)sizeof(char), grf_size);
+        auto tmp = lex_scope.alloc_reg_buf_data(nregs).format(
+                0, ngen::DataType::ub);
+        emit_reorder_1d_tile(hw, host, scope, width, src, src_stride, tmp, 1);
+        int step = get_step();
+        for (int i = 0; i < width; i += step) {
+            step = std::min(step, width - i);
+            step = utils::rnd_down_pow2(step);
+            int esize = step;
+            auto t = tmp.subregister(i, esize, 1, ngen::DataType::ub);
+            auto t2 = tmp.subregister(i + 1, esize - 1, 1, ngen::DataType::ub);
+            auto d = dst.subregister(i / 2, esize / 2, 1, ngen::DataType::ub);
+            plan(cvt_u8_to_u4x2, esize, t(1), t(1)); // int8 to int4 w/ sat
+            plan(shl4, esize / 2, t2(2), t2(2)); // int4 00XX 00XX to 00XX XX00
+            plan(host->or_, esize / 2, t(2), t2(2)); // pack int4
+            plan(mov, esize / 2, d(1), t(1)); // copy to dst
         }
         return;
     }
