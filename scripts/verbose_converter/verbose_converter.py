@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 ################################################################################
-# Copyright 2020-2024 Intel Corporation
+# Copyright 2020-2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import argparse
 import logging
 import sys
 from argparse import RawTextHelpFormatter
-from typing import IO, Dict, Iterable, List
+from typing import IO, Dict, Iterable, List, Tuple
 
 from src.benchdnn_generator import InputGenerator  # type: ignore
 from src.breakdown_generator import BreakdownGenerator  # type: ignore
@@ -48,7 +48,7 @@ def generate(generator, parser: LogParser, *args):
     return generator.generate(parser.get_data(), *args)
 
 
-def convert(
+def _convert_internal(
     parser: str,
     input: Iterable[str],
     action: str,
@@ -56,7 +56,7 @@ def convert(
     split_output: bool,
     agg_keys: List[str],
     events: Iterable[str] = default_events,
-) -> Dict[str, str]:
+) -> Tuple[Dict[str, str], Dict[str, str]]:
     if not check_version():
         raise ConverterError("Unsupported Python version")
 
@@ -72,7 +72,7 @@ def convert(
     if action == "dumpIR":
         logger.info("Dumping data from input...")
         log_parser.dump(True)
-        return {}
+        return {}, {}
     elif action == "generate":
         logger.info("Generating output ...")
         if generator == "benchdnn":
@@ -85,13 +85,20 @@ def convert(
                         """
                     )
                 )
-            return generate(InputGenerator(logger), log_parser, split_output)
+            gen = InputGenerator(logger)
+            return gen.generate(log_parser.get_data(), split_output)
         elif generator == "breakdown":
-            return generate(BreakdownGenerator(logger), log_parser, agg_keys)
+            gen = BreakdownGenerator(logger)
+            return gen.generate(log_parser.get_data(), agg_keys), {}
         else:
             raise ConverterError("Unsupported generator")
     else:
         raise ConverterError("Unsupported action")
+
+
+def convert(*args):
+    cases, _ = _convert_internal(*args)
+    return cases
 
 
 def validate_option(value, supported_values, message):
@@ -228,7 +235,7 @@ def main() -> int:
 
     for events in event_sets:
         try:
-            output = convert(
+            output, files = _convert_internal(
                 parser=args.parser,
                 input=input_data,
                 action=args.action,
@@ -259,6 +266,9 @@ def main() -> int:
                 fd.write(f"{value}\n")
             if args.output != "stdout":
                 fd.close()
+        for filename, data in files.items():
+            with open(filename, "w") as fd:
+                fd.write(data.strip() + "\n")
     return 0
 
 

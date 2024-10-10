@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright 2022-2024 Intel Corporation
+# Copyright 2022-2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,8 +16,6 @@
 
 from collections import defaultdict
 from typing import Any, Dict, List
-
-from . import ir
 
 
 class Aggregate:
@@ -42,7 +40,7 @@ class BreakdownGenerator:
     def __init__(self, _: Any = None):  # Maintain old interface
         pass
 
-    def generate(self, input: Dict[int, ir.Entry], agg_keys: List[str]):
+    def generate(self, input, agg_keys: List[str]) -> Dict[str, str]:
         data: Dict[str, Aggregate] = defaultdict(Aggregate)
         ofs = ","
 

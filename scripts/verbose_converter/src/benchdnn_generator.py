@@ -15,8 +15,10 @@
 ################################################################################
 
 import logging
+from abc import ABCMeta, abstractmethod
 from collections import defaultdict
-from typing import Dict, List, Mapping, Optional, Set
+from json import dumps as stringify
+from typing import Dict, List, Mapping, Optional, Set, Tuple, cast
 
 from . import ir
 
@@ -26,7 +28,7 @@ def maybe_make_any_tag(md: ir.MemoryDescriptor):
 
 
 def attribute_flag(name: str):
-    def wrapper(converter: "Converter"):
+    def wrapper(converter: "PrimitiveConverter"):
         attr = getattr(converter.entry.exts, name)
         flag_name = name.replace("_", "-")
         if attr is None:
@@ -36,12 +38,15 @@ def attribute_flag(name: str):
     return property(wrapper)
 
 
-class ConverterMeta(type):
+class Converter(metaclass=ABCMeta):
     driver: str
 
+    @abstractmethod
+    def to_benchdnn(self) -> Tuple[str, dict]: ...
 
-class Converter(metaclass=ConverterMeta):
-    def __init__(self, entry: ir.Entry):
+
+class PrimitiveConverter(Converter):
+    def __init__(self, entry: ir.HashablePrimitiveEntry):
         self.entry = entry
 
     def _get_dir(self):
@@ -251,9 +256,25 @@ class Converter(metaclass=ConverterMeta):
     def shapes(self):
         return self.entry.shapes
 
+    def to_benchdnn(self):
+        args = [
+            "--reset",
+            "--allow-enum-tags-only=0",
+            self.engine,
+            self.dir,
+            self.aux,
+            self.bias_mask,
+            self.dts,
+            self.tags,
+            self.flags,
+            self.attrs,
+            self.shapes,
+        ]
+        return " ".join(arg for arg in args if arg)
+
 
 class AlgorithmMixin:
-    entry: ir.Entry
+    entry: ir.HashablePrimitiveEntry
 
     def _get_alg(self):
         alg = self.entry.aux.get("alg")
@@ -263,7 +284,7 @@ class AlgorithmMixin:
 
 
 class MultiSourceMixin:
-    entry: ir.Entry
+    entry: ir.HashablePrimitiveEntry
 
     @property
     def dts(self):
@@ -296,7 +317,7 @@ class MultiSourceMixin:
 
 
 class CommonDataTypeMixin:
-    entry: ir.Entry
+    entry: ir.HashablePrimitiveEntry
 
     @property
     def dts(self):
@@ -310,7 +331,7 @@ class CommonDataTypeMixin:
 
 
 class TagTripletMixin:
-    entry: ir.Entry
+    entry: ir.HashablePrimitiveEntry
 
     @property
     def tags(self):
@@ -365,7 +386,7 @@ class StridesMixin(TagTripletMixin):
 
 
 class MultiDataTypeMixin:
-    entry: ir.Entry
+    entry: ir.HashablePrimitiveEntry
 
     @property
     def dts(self):
@@ -393,7 +414,7 @@ class MultiDataTypeWithBiasMixin(MultiDataTypeMixin):
 
 
 class NormalizationMixin:
-    entry: ir.Entry
+    entry: ir.HashablePrimitiveEntry
 
     @property
     def aux(self):
@@ -403,11 +424,11 @@ class NormalizationMixin:
         return ""
 
 
-class BatchNormalizationConverter(NormalizationMixin, Converter):
+class BatchNormalizationConverter(NormalizationMixin, PrimitiveConverter):
     driver: str = "bnorm"
 
 
-class BinaryConverter(AlgorithmMixin, MultiSourceMixin, Converter):
+class BinaryConverter(AlgorithmMixin, MultiSourceMixin, PrimitiveConverter):
     driver: str = "binary"
 
     @property
@@ -415,7 +436,7 @@ class BinaryConverter(AlgorithmMixin, MultiSourceMixin, Converter):
         return self.entry.shapes.split(" ", 1)[0]
 
 
-class BRGEMMConverter(MultiDataTypeMixin, Converter):
+class BRGEMMConverter(MultiDataTypeMixin, PrimitiveConverter):
     driver: str = "brgemm"
 
     @property
@@ -425,7 +446,9 @@ class BRGEMMConverter(MultiDataTypeMixin, Converter):
         return f"--bs={bs} --beta={beta}"
 
 
-class ConcatConverter(CommonDataTypeMixin, MultiSourceMixin, Converter):
+class ConcatConverter(
+    CommonDataTypeMixin, MultiSourceMixin, PrimitiveConverter
+):
     driver: str = "concat"
 
     @property
@@ -440,7 +463,7 @@ class ConvolutionConverter(
     AlgorithmMixin,
     TagTripletMixin,
     MultiDataTypeWithBiasMixin,
-    Converter,
+    PrimitiveConverter,
 ):
     driver: str = "conv"
 
@@ -456,7 +479,7 @@ class DeconvolutionConverter(ConvolutionConverter):
     driver: str = "deconv"
 
 
-class EltwiseConverter(Converter):
+class EltwiseConverter(PrimitiveConverter):
     driver: str = "eltwise"
 
     @property
@@ -487,7 +510,7 @@ class GroupNormalizationConverter(
 
 
 class InnerProductConverter(
-    TagTripletMixin, MultiDataTypeWithBiasMixin, Converter
+    TagTripletMixin, MultiDataTypeWithBiasMixin, PrimitiveConverter
 ):
     driver: str = "ip"
 
@@ -517,7 +540,7 @@ class LayerNormalizationConverter(GroupNormalizationConverter):
         return tags.strip()
 
 
-class LRNConverter(AlgorithmMixin, Converter):
+class LRNConverter(AlgorithmMixin, PrimitiveConverter):
     driver: str = "lrn"
 
     @property
@@ -529,7 +552,9 @@ class LRNConverter(AlgorithmMixin, Converter):
         return f"--alg={algs[alg]}"
 
 
-class MatmulConverter(StridesMixin, MultiDataTypeWithBiasMixin, Converter):
+class MatmulConverter(
+    StridesMixin, MultiDataTypeWithBiasMixin, PrimitiveConverter
+):
     driver: str = "matmul"
 
     @staticmethod
@@ -556,7 +581,7 @@ class MatmulConverter(StridesMixin, MultiDataTypeWithBiasMixin, Converter):
         return f"--runtime_dims_masks={rt_dim_masks}"
 
 
-class PoolingConverter(MultiDataTypeMixin, Converter):
+class PoolingConverter(MultiDataTypeMixin, PrimitiveConverter):
     driver: str = "pool"
 
     @property
@@ -564,7 +589,7 @@ class PoolingConverter(MultiDataTypeMixin, Converter):
         return f"--alg={self._get_alg()}"
 
 
-class PreLUConverter(Converter):
+class PreLUConverter(PrimitiveConverter):
     driver: str = "prelu"
 
     @property
@@ -596,7 +621,7 @@ class ReductionConverter(
     AlgorithmMixin,
     TagTripletMixin,
     CommonDataTypeMixin,
-    Converter,
+    PrimitiveConverter,
 ):
     driver: str = "reduction"
 
@@ -612,7 +637,7 @@ class ReductionConverter(
         return " ".join(args)
 
 
-class ReorderConverter(StridesMixin, CommonDataTypeMixin, Converter):
+class ReorderConverter(StridesMixin, CommonDataTypeMixin, PrimitiveConverter):
     driver: str = "reorder"
 
     def _convert_flag(self, prefix, md: ir.MemoryDescriptor):
@@ -657,11 +682,13 @@ class ReorderConverter(StridesMixin, CommonDataTypeMixin, Converter):
         return ""
 
 
-class ResamplingConverter(AlgorithmMixin, CommonDataTypeMixin, Converter):
+class ResamplingConverter(
+    AlgorithmMixin, CommonDataTypeMixin, PrimitiveConverter
+):
     driver: str = "resampling"
 
 
-class RNNConverter(AlgorithmMixin, Converter):
+class RNNConverter(AlgorithmMixin, PrimitiveConverter):
     driver: str = "rnn"
 
     @property
@@ -782,7 +809,7 @@ class RNNConverter(AlgorithmMixin, Converter):
         return " ".join([tag_flag] + other_flags)
 
 
-class ShuffleConverter(Converter):
+class ShuffleConverter(PrimitiveConverter):
     driver: str = "shuffle"
 
     @property
@@ -797,7 +824,9 @@ class ShuffleConverter(Converter):
         return " ".join(args)
 
 
-class SoftmaxConverter(TagTripletMixin, CommonDataTypeMixin, Converter):
+class SoftmaxConverter(
+    TagTripletMixin, CommonDataTypeMixin, PrimitiveConverter
+):
     driver: str = "softmax"
 
     @property
@@ -809,11 +838,11 @@ class SoftmaxConverter(TagTripletMixin, CommonDataTypeMixin, Converter):
         return flags
 
 
-class SumConverter(MultiSourceMixin, Converter):
+class SumConverter(MultiSourceMixin, PrimitiveConverter):
     driver: str = "sum"
 
 
-class ZeroPadConverter(Converter):
+class ZeroPadConverter(PrimitiveConverter):
     driver: str = "zeropad"
 
     @property
@@ -825,8 +854,18 @@ class ZeroPadConverter(Converter):
         return f"--tag={maybe_make_any_tag(self.entry.mds[0])}"
 
 
-def get_converter(primitive: str) -> ConverterMeta:
-    converters: Dict[str, ConverterMeta] = {
+class GraphConverter(Converter):
+    driver: str = "graph"
+
+    def __init__(self, entry: ir.HashableGraphEntry):
+        self.entry = entry
+
+    def to_benchdnn(self):
+        return "", {}
+
+
+def get_converter(entry: ir.HashableEntry) -> Converter:
+    converters = {
         "batch_normalization": BatchNormalizationConverter,
         "binary": BinaryConverter,
         "brgemm": BRGEMMConverter,
@@ -850,7 +889,13 @@ def get_converter(primitive: str) -> ConverterMeta:
         "sum": SumConverter,
         "zero_pad": ZeroPadConverter,
     }
-    return converters[primitive]
+    if entry.component in ("primitive", "ukernel"):
+        primitive_entry = cast(ir.HashablePrimitiveEntry, entry)
+        primitive = primitive_entry.prim_kind
+        return converters[primitive](primitive_entry)
+    else:
+        graph_entry = cast(ir.HashableGraphEntry, entry)
+        return GraphConverter(graph_entry)
 
 
 class InputGenerator:
@@ -861,30 +906,22 @@ class InputGenerator:
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger
 
-    def _generate_case(self, entry: ir.Entry):
-        Converter = get_converter(entry.prim_kind)
-        converter = Converter(entry)
-        args = [
-            "--reset",
-            "--allow-enum-tags-only=0",
-            converter.engine,
-            converter.dir,
-            converter.aux,
-            converter.bias_mask,
-            converter.dts,
-            converter.tags,
-            converter.flags,
-            converter.attrs,
-            converter.shapes,
-        ]
-        return converter.driver, " ".join(arg for arg in args if arg)
+    def _generate_case(self, entry: ir.PrimitiveEntry):
+        converter = get_converter(entry)
+        args, json = converter.to_benchdnn()
+        return converter.driver, args, json
 
-    def generate(self, input, split_by_driver=False):
+    def generate(
+        self,
+        input,
+        split_by_driver=False,
+    ) -> Tuple[Dict[str, str], Dict[str, str]]:
         missing: Set[str] = set()
         data: Dict[str, List[str]] = defaultdict(list)
+        jsons: Dict[str, str] = {}
         for value in input.values():
             try:
-                driver, args = self._generate_case(value)
+                driver, args, json = self._generate_case(value)
             except KeyError as e:
                 if self.logger is not None and str(e) not in missing:
                     missing.add(str(e))
@@ -893,4 +930,7 @@ class InputGenerator:
             if not split_by_driver:
                 driver, args = "all", f"--{driver} {args}"
             data[driver].append(args)
-        return {k: "\n".join(v) for k, v in data.items()}
+            if json is not None:
+                filename = json.pop("filename")
+                jsons[filename] = stringify(json)
+        return {k: "\n".join(v) for k, v in data.items()}, jsons

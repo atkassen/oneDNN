@@ -14,6 +14,7 @@
 # limitations under the License.
 ################################################################################
 
+import enum
 import string
 from contextlib import nullcontext
 from typing import (
@@ -149,12 +150,21 @@ class InvalidEntryError(ParseError):
     pass
 
 
+class Component(enum.Enum):
+    PRIMITIVE = "primitive"
+    GRAPH = "graph"
+
+
 class ParserImpl:
-    default_template = (
+    default_primitive_template = (
         "operation,engine,primitive,implementation,prop_kind,"
         + "memory_descriptors,attributes,auxiliary,problem_desc,exec_time"
     )
-    _version_map: Dict[int, type] = {}
+    default_graph_template = (
+        "operation,engine,partition_id,partition_kind,operations,data_formats,"
+        "logical_tensors,fpmath_mode,implementation,backend,exec_time"
+    )
+    _impl_map: Dict[int, type] = {}
 
     @staticmethod
     def parse_aux(aux: str):
@@ -171,7 +181,7 @@ class ParserImpl:
         try:
             return list(map(self.parse_md, descriptors.split()))
         except ValueError:
-            raise ValueError(f"Could not parse mds {descriptors}")
+            raise ParseError(f"Could not parse mds {descriptors}")
 
     @staticmethod
     def is_bit_layout(dt):
@@ -260,8 +270,8 @@ class ParserImpl:
             flags=flags,
         )
 
-    def parse_attrs(self, attrs):
-        exts = ir.Attributes()
+    def parse_primitive_attrs(self, attrs):
+        exts = ir.PrimitiveAttributes()
         for attr in attrs.split():
             spec = ParseSpec(attr)
             name, args = spec.read_str(), ""
@@ -438,7 +448,7 @@ class ParserImpl:
             if str(member) == rm:
                 return member
         else:
-            raise ValueError(f"Invalid rounding mode {rounding_mode}")
+            raise ParseError(f"Invalid rounding mode {rounding_mode}")
 
     def parse_rounding_modes(self, rounding_modes: str):
         spec = ParseSpec(rounding_modes)
@@ -446,7 +456,7 @@ class ParserImpl:
         while True:
             arg = spec.read_str()
             if not spec.read_literal(":"):
-                raise ValueError("Expected rounding mode")
+                raise ParseError("Expected rounding mode")
             mode = self.parse_rounding_mode(spec.read_str())
             modes[arg] = mode
             if not spec.read_literal("+"):
@@ -455,7 +465,76 @@ class ParserImpl:
 
     identity = staticmethod(lambda x: x)
 
+    def parse_graph_operation(self, serialized: str):
+        kind, codomain, domain = serialized.split(":", 2)
+        in_ids = list(map(int, codomain.split("x")))
+        out_ids = list(map(int, domain.split("x")))
+        return ir.Operation(kind, in_ids, out_ids)
+
     # Additional attributes
+    def parse_graph_operations(self, serialized: str):
+        return [self.parse_graph_operation(op) for op in serialized.split(";")]
+
+    @staticmethod
+    def parse_data_formats(formats: str):
+        format_info: Dict[str, List[str]] = {}
+        parts = formats.strip().split()
+        for part in parts:
+            key, values = part.split(":", 1)
+            format_info[key] = values.split(";")
+        return ir.DataFormats(**format_info)
+
+    @classmethod
+    def parse_tensor(cls, tensor: str):
+        type_and_dt, id, layout_type, property, dims, arg = tensor.split(":")
+        in_out_num, dt = type_and_dt.split("_")
+        if in_out_num.startswith("in"):
+            tensor_type = ir.TensorType.INPUT
+            tensor_id = int(in_out_num[2:])
+        elif in_out_num.startswith("out"):
+            tensor_type = ir.TensorType.OUTPUT
+            tensor_id = int(in_out_num[3:])
+        else:
+            raise ParseError(
+                f"Logical tensor {tensor} should start with in/out"
+            )
+
+        def as_concrete_tensor(cls, **kwargs):
+            return cls(
+                id=int(id),
+                dt=dt,
+                type=tensor_type,
+                type_id=tensor_id,
+                property=ir.TensorProperty(property),
+                shape=list(map(int, dims.split("x"))),
+                **kwargs,
+            )
+
+        if layout_type == "strided":
+            strides = list(map(int, arg.split("s")))
+            return as_concrete_tensor(ir.StridedTensor, strides=strides)
+        elif layout_type == "opaque":
+            return as_concrete_tensor(ir.OpaqueTensor, layout_id=int(arg))
+        elif layout_type == "any":
+            return as_concrete_tensor(ir.AnyTensor)
+        else:
+            raise ParseError(f"Unexpected layout type {layout_type}")
+
+    @classmethod
+    def parse_tensors(cls, tensors: str):
+        try:
+            return list(map(cls.parse_tensor, tensors.strip().split()))
+        except ValueError:
+            raise ParseError(f"Could not parse logical tensors {tensors}")
+
+    @classmethod
+    def parse_graph_attrs(cls, attrs: str):
+        spec = ParseSpec(attrs)
+        fpmath_mode = "undef"
+        if spec.read_literal("fpm:"):
+            fpmath_mode = spec.buf
+        return ir.GraphAttributes(fpmath=fpmath_mode)
+
     parse_acc_mode = identity
     parse_deterministic = identity
     parse_scratchpad_mode = identity
@@ -463,58 +542,82 @@ class ParserImpl:
     # Additional template components
     parse_operation = identity
     parse_prim_kind = identity
+    parse_partition_kind = identity
     parse_prop_kind = identity
     parse_engine = identity
     parse_impl = identity
+    parse_backend = identity
     parse_shapes = identity
+    parse_partition_id = staticmethod(int)
     parse_time = staticmethod(float)
     parse_timestamp = staticmethod(float)
 
-    def dnnl_to_ir(self):
+    def primitive_verbose_map(self):
         return {
-            "operation": ("operation", self.parse_operation, True),
-            "engine": ("engine", self.parse_engine, True),
-            "primitive": ("prim_kind", self.parse_prim_kind, True),
-            "implementation": ("impl", self.parse_impl, True),
-            "prop_kind": ("prop_kind", self.parse_prop_kind, True),
-            "memory_descriptors": ("mds", self.parse_mds, True),
-            "attributes": ("exts", self.parse_attrs, True),
-            "auxiliary": ("aux", self.parse_aux, True),
-            "problem_desc": ("shapes", self.parse_shapes, True),
-            "exec_time": ("time", self.parse_time, False),
-            "timestamp": ("timestamp", self.parse_timestamp, False),
+            "operation": ("operation", self.parse_operation),
+            "engine": ("engine", self.parse_engine),
+            "primitive": ("prim_kind", self.parse_prim_kind),
+            "implementation": ("impl", self.parse_impl),
+            "prop_kind": ("prop_kind", self.parse_prop_kind),
+            "memory_descriptors": ("mds", self.parse_mds),
+            "attributes": ("exts", self.parse_primitive_attrs),
+            "auxiliary": ("aux", self.parse_aux),
+            "problem_desc": ("shapes", self.parse_shapes),
+            "exec_time": ("time", self.parse_time),
+            "timestamp": ("timestamp", self.parse_timestamp),
         }
 
-    def parse(self, line: str, template: Optional[str]):
-        if template is None:
-            template = self.default_template
-        entry = {}
-        fields = template.rstrip().split(",")
-        values = line.rstrip().split(",")
-        mapping = self.dnnl_to_ir()
-        min_fields = sum((mapping[field][2] for field in fields))
-        max_fields = len(fields)
-        if len(values) < min_fields:
-            raise InvalidEntryError("parse error: too few fields to parse")
-        if len(values) > max_fields:
-            raise InvalidEntryError("parse error: too many fields to parse")
-        mapped = dict(zip(fields, values))
-        for field, (key, parse, reqd) in mapping.items():
-            if field not in mapped:
-                if not reqd:
-                    continue
-                raise InvalidEntryError(f"parse error: missing {field} field")
-            value = mapped[field]
+    def graph_verbose_map(self):
+        return {
+            "operation": ("operation", self.parse_operation),
+            "engine": ("engine", self.parse_engine),
+            "partition_id": ("partition_id", self.parse_partition_id),
+            "partition_kind": ("partition_kind", self.parse_partition_kind),
+            "operations": ("operations", self.parse_graph_operations),
+            "data_formats": ("data_formats", self.parse_data_formats),
+            "logical_tensors": ("tensors", self.parse_tensors),
+            "fpmath_mode": ("exts", self.parse_graph_attrs),
+            "implementation": ("impl", self.parse_impl),
+            "backend": ("backend", self.parse_backend),
+            "exec_time": ("time", self.parse_time),
+            "timestamp": ("timestamp", self.parse_timestamp),
+        }
+
+    def _parse(self, line: str, template: str, mapping):
+        for field, value in zip(template.split(","), line.split(",")):
+            if field not in mapping:
+                continue
+            key, parse = mapping[field]
             try:
-                entry[key] = parse(value)
-            except (ParseError, ValueError) as e:
-                raise ParseError(f"parse error: {field}: {value} ({e!s})")
-        return entry
+                yield key, parse(value)
+            except ParseError:
+                raise ParseError(f"parsing entry error: {field}: {value}")
+            except ValueError as e:
+                raise ParseError(f"parse error: {line} ({e!s})")
+
+    def parse_primitive(self, line: str, template: Optional[str]):
+        if template is None:
+            template = self.default_primitive_template
+        parsed = self._parse(line, template, self.primitive_verbose_map())
+        return dict(parsed), ir.PrimitiveEntry
+
+    def parse_graph(self, line: str, template: Optional[str]):
+        if template is None:
+            template = self.default_graph_template
+        entry = dict(self._parse(line, template, self.graph_verbose_map()))
+        data_formats = entry["data_formats"]
+        operations = entry["operations"]
+        zipped = zip(operations, data_formats.data, data_formats.filter)
+        for operation, data, filter in zipped:
+            operation.data = data or None
+            operation.filter = filter or None
+        del entry["data_formats"]
+        return entry, ir.GraphEntry
 
 
 def register(*, version: int):
     def registrar(impl: type):
-        ParserImpl._version_map[version] = impl
+        ParserImpl._impl_map[version] = impl
         return impl
 
     return registrar
@@ -547,11 +650,17 @@ class Parser:
     def __init__(
         self,
         input: Iterable[str],
-        events: Iterable[str] = _default_events,
+        events: Optional[Iterable[str]] = None,
+        components: Optional[Iterable[Component]] = None,
         error_handler: ContextManager = nullcontext(),
     ):
+        if events is None:
+            events = "exec", "create"
+        if components is None:
+            components = (Component.PRIMITIVE,)
         self.input = input
         self.events = set(events)
+        self.components = set(components)
         self.error_handler = error_handler
 
     def _fix_template(self, template) -> Optional[str]:
@@ -567,6 +676,7 @@ class Parser:
                 _, operation, args = line.split(",", 2)
             except ValueError:
                 continue
+            component = Component.PRIMITIVE
             version = 0
             if operation.startswith("v"):
                 try:
@@ -582,15 +692,16 @@ class Parser:
                 pass
             else:
                 operation, args = args.split(",", 1)
-            component = "primitive"
             if operation in ("graph", "primitive", "ukernel"):
-                component = operation
+                if operation == "graph":
+                    component = Component.GRAPH
+                # else: use the default (Component.PRIMITIVE)
                 operation, args = args.split(",", 1)
             yield line, version, timestamp, component, operation, args
 
-    def __iter__(self) -> Iterator[Tuple[str, ir.Entry]]:
+    def __iter__(self) -> Iterator[Tuple[str, ir.HashableEntry]]:
         template = None
-        cache: Dict[str, dict] = {}
+        cache: Dict[str, Tuple[dict, type]] = {}
         errors: Set[str] = set()
         parsed = self._parse_leading_fields(self.input)
         for line, version, timestamp, component, operation, args in parsed:
@@ -618,42 +729,62 @@ class Parser:
                 continue
             if event not in self.events:
                 continue
+            if component not in self.components:
+                continue
             leading_args, last_arg = args.rsplit(",", 1)
             try:
                 time = float(last_arg)
             except ValueError:
                 time = 0.0
                 leading_args = args
-            key = f"v{version},{component},{operation},{leading_args}"
+            key = f"v{version},{component!s},{operation},{leading_args}"
             if key in errors:
                 continue
             success = False
             with self.error_handler:
                 if key in cache:
-                    params = dict(cache[key])
+                    params, container = cache[key]
                     params.update(time=time, timestamp=timestamp)
-                else:
-                    new_line = f"{operation},{args}"
-                    params = self.parse(new_line, template, version)
-                    cache[key] = dict(params)
-                    if timestamp is not None:
-                        params.update(timestamp=timestamp)
-                yield line, ir.Entry(version=version, **params)
+                    yield line, container(**params)
+                new_line = f"{operation},{args}"
+                params, container = self.parse(
+                    new_line,
+                    component,
+                    template,
+                    version,
+                )
+                cache[key] = params, container
+                if timestamp is not None:
+                    params.update(timestamp=timestamp)
+                yield line, container(**params)
                 success = True
             if not success:
                 errors.add(key)
 
-    def items(self) -> Iterable[Tuple[int, Tuple[str, ir.Entry]]]:
+    def items(self) -> Iterable[Tuple[int, Tuple[str, ir.HashableEntry]]]:
         yield from enumerate(self)
 
     @staticmethod
     def _get_impl(version: int = 0) -> ParserImpl:
-        if version not in Parser._parser_impls:
-            if version not in ParserImpl._version_map:
-                raise ParseError(f"No parsers registered for version {version}")
-            Parser._parser_impls[version] = ParserImpl._version_map[version]()
+        if version in Parser._parser_impls:
+            pass
+        elif version in ParserImpl._impl_map:
+            Parser._parser_impls[version] = ParserImpl._impl_map[version]()
+        else:
+            raise ParseError(f"No parser registered for version {version}.")
         return Parser._parser_impls[version]
 
-    def parse(self, line: str, template: Optional[str], version: int = 0):
+    def parse(
+        self,
+        line: str,
+        component: Component,
+        template: Optional[str],
+        version: int = 0,
+    ):
         impl = self._get_impl(version)
-        return impl.parse(line, template)
+        parser_map = {
+            Component.GRAPH: impl.parse_graph,
+            Component.PRIMITIVE: impl.parse_primitive,
+        }
+        parser = parser_map[component]
+        return parser(line, template)

@@ -18,7 +18,7 @@ import enum
 import string
 from abc import abstractmethod
 from collections.abc import MutableMapping
-from dataclasses import MISSING, dataclass, fields
+from dataclasses import MISSING, dataclass, field, fields
 from typing import Dict, List, Optional, Union
 
 
@@ -69,8 +69,8 @@ class Mapping(MutableMapping):
         return len(fields(self))
 
     def __iter__(self):
-        for field in fields(self):
-            yield field.name
+        for datafield in fields(self):
+            yield datafield.name
 
     def __hash__(self):
         return hash(hash_str(self))
@@ -183,14 +183,14 @@ class PostOp(FormattedMapping):
         required_args = []
         optional_args = []
         seen_non_default = False
-        for field in reversed(fields(self)):
-            if field.name == "alg":
+        for datafield in reversed(fields(self)):
+            if datafield.name == "alg":
                 continue
-            value = getattr(self, field.name)
-            if field.default is MISSING:
+            value = getattr(self, datafield.name)
+            if datafield.default is MISSING:
                 required_args.append(value)
                 continue
-            if not seen_non_default and value == field.default:
+            if not seen_non_default and value == datafield.default:
                 continue
             seen_non_default = True
             optional_args.append(value)
@@ -318,7 +318,7 @@ class RoundingMode(CompositeAttribute, enum.Enum):
         return self.value
 
 
-Attribute = Union[
+PrimitiveAttribute = Union[
     str,  # acc-mode, etc
     FPMathMode,
     Dropout,
@@ -331,7 +331,7 @@ Attribute = Union[
 
 
 @dataclass(eq=False)
-class Attributes(FormattedMapping):
+class PrimitiveAttributes(FormattedMapping):
     acc_mode: Optional[str] = None
     deterministic: Optional[str] = None
     dropout: Optional[Dropout] = None
@@ -351,9 +351,9 @@ class Attributes(FormattedMapping):
 
     def _attr_name_to_field_name(self, item: str):
         original_item = item
-        for field in fields(self):
-            if item == self._field_name_to_attr_name(field.name):
-                return field.name
+        for f in fields(self):
+            if item == self._field_name_to_attr_name(f.name):
+                return f.name
         raise KeyError(original_item)
 
     def __getitem__(self, item: str):
@@ -362,16 +362,16 @@ class Attributes(FormattedMapping):
             raise KeyError(item)
         return value
 
-    def __setitem__(self, item: str, value: Attribute):
+    def __setitem__(self, item: str, value: PrimitiveAttribute):
         return setattr(self, self._attr_name_to_field_name(item), value)
 
     def __delitem__(self, item: str):
         setattr(self, self._attr_name_to_field_name(item), None)
 
     def __iter__(self):
-        for field in fields(self):
-            if getattr(self, field.name) is not None:
-                yield self._field_name_to_attr_name(field.name)
+        for f in fields(self):
+            if getattr(self, f.name) is not None:
+                yield self._field_name_to_attr_name(f.name)
 
     def __len__(self):
         return len(list(iter(self)))
@@ -391,22 +391,129 @@ class Attributes(FormattedMapping):
         return " ".join(parts)
 
 
+class TensorType(enum.Enum):
+    INPUT = "in"
+    OUTPUT = "out"
+
+    def __str__(self):
+        return self.value
+
+
+class TensorProperty(enum.Enum):
+    UNDEF = "undef"
+    VARIABLE = "variable"
+    CONSTANT = "constant"
+
+    def __str__(self):
+        return self.value
+
+
+@dataclass(eq=False)
+class DataFormats(Mapping):
+    data: List[str] = field(default_factory=list)
+    filter: List[str] = field(default_factory=list)
+
+
+@dataclass(eq=False)
+class Operation(Mapping):
+    kind: str
+    inputs: List[int]
+    outputs: List[int]
+    data: Optional[str] = None
+    filter: Optional[str] = None
+
+    def __str__(self):
+        ins = "x".join(f"t{id}" for id in self.inputs)
+        outs = "x".join(f"t{id}" for id in self.outputs)
+        return f"{self.kind}:{ins}->{outs}"
+
+
+@dataclass(eq=False)
+class Tensor(Mapping):
+    type: TensorType
+    type_id: int
+    dt: str
+    id: int
+    property: str
+    shape: List[int]
+    layout_type: str
+
+    def __str__(self):
+        shape = "x".join(map(str, self.shape))
+        return (
+            f"{self.type!s}{self.type_id}_{self.dt}:{self.id}:"
+            + f"{self.layout_type}:{self.property}:{shape}"
+        )
+
+
+@dataclass(eq=False)
+class StridedMixin:
+    strides: List[int]
+
+
+@dataclass(eq=False)
+class StridedTensor(Tensor, StridedMixin):
+    layout_type: str = "strided"
+
+    def __str__(self):
+        strides = "s".join(map(str, self.strides))
+        return f"{super().__str__()}:{strides}"
+
+
+@dataclass(eq=False)
+class OpaqueMixin:
+    layout_id: int
+
+
+@dataclass(eq=False)
+class OpaqueTensor(Tensor, OpaqueMixin):
+    layout_type: str = "opaque"
+
+    def __str__(self):
+        return f"{super().__str__()}:{self.layout_id}"
+
+
+@dataclass(eq=False)
+class AnyTensor(Tensor):
+    layout_type: str = "any"
+
+    def __str__(self):
+        return f"{super().__str__()}:any"
+
+
+@dataclass(eq=False)
+class GraphAttributes(Mapping):
+    fpmath: str
+
+
 @dataclass(eq=False)
 class HashableEntry(FormattedMapping):
     operation: str
     engine: str
-    prim_kind: str
     impl: str
+    component: str
+
+    def _format(self, _):
+        return f"{self.component},{self.operation},{self.engine}"
+
+
+@dataclass(eq=False)
+class PrimitiveMixin:
+    prim_kind: str
     prop_kind: str
     aux: Dict[str, str]
     mds: List[MemoryDescriptor]
     shapes: str
-    exts: Attributes
+    exts: PrimitiveAttributes
+
+
+@dataclass(eq=False)
+class HashablePrimitiveEntry(HashableEntry, PrimitiveMixin):
+    component: str = "primitive"
 
     def _format(self, convert):
         parts = [
-            self.operation,
-            self.engine,
+            super()._format(convert),
             self.prim_kind,
             self.impl,
             self.prop_kind,
@@ -417,15 +524,57 @@ class HashableEntry(FormattedMapping):
         ]
         return ",".join(parts)
 
-    def __str__(self):
-        return f"onednn_verbose,v1,primitive,{super().__str__()},0"
+
+@dataclass(eq=False)
+class GraphMixin:
+    partition_id: int
+    partition_kind: str
+    backend: str
+    operations: List[Operation]
+    tensors: List[Tensor]
+    exts: GraphAttributes
 
 
-class Entry(HashableEntry):
+@dataclass(eq=False)
+class HashableGraphEntry(HashableEntry, GraphMixin):
+    component: str = "graph"
+
+    def _get_data_formats(self):
+        data, filter = [], []
+        have_data = False
+        have_filter = False
+        for op in self.operations:
+            data.append(op.data or "")
+            filter.append(op.filter or "")
+            have_data |= op.data is not None
+            have_filter |= op.filter is not None
+        parts = []
+        if have_data:
+            parts.append(";".join(data))
+        if have_filter:
+            parts.append(";".join(filter))
+        return " ".join(parts)
+
+    def _format(self, convert):
+        parts = [
+            super()._format(convert),
+            str(self.partition_id),
+            self.partition_kind,
+            ";".join(map(str, self.operations)),
+            self._get_data_formats(),
+            " ".join(map(str, self.tensors)),
+            f"fpm:{self.exts.fpmath}" if self.exts.fpmath else "",
+            self.impl,
+            self.backend,
+        ]
+        return ",".join(parts)
+
+
+class VerboseExtrasMixin:
     def __init__(
         self,
         *,
-        time=0.0,
+        time: float = 0.0,
         timestamp: Optional[float] = None,
         version: int = 0,
         **kwargs,
@@ -434,3 +583,14 @@ class Entry(HashableEntry):
         self.timestamp = timestamp
         self.version = version
         super().__init__(**kwargs)
+
+    def __str__(self):
+        return f"onednn_verbose,v{self.version},{super().__str__()},{self.time}"
+
+
+class PrimitiveEntry(VerboseExtrasMixin, HashablePrimitiveEntry):
+    pass
+
+
+class GraphEntry(VerboseExtrasMixin, HashableGraphEntry):
+    pass

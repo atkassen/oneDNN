@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright 2020-2024 Intel Corporation
+# Copyright 2020-2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,7 +40,7 @@ class LogParser:
     def __init__(self, logger, input: Iterable[str] = ()):
         self.input = input
         self.error_handler = LoggingContext(logger)
-        self.data: List[Tuple[str, ir.Entry]] = []
+        self.data: List[Tuple[str, ir.HashableEntry]] = []
 
     def process(self, filter_events):
         """
@@ -55,7 +55,11 @@ class LogParser:
         None
         """
 
-        parser = parse.Parser(self.input, filter_events, self.error_handler)
+        parser = parse.Parser(
+            self.input,
+            events=filter_events,
+            error_handler=self.error_handler,
+        )
         self.data = list(parser)
 
     def get_data(self):
