@@ -143,7 +143,7 @@ bool reorder_ir_builder_t::try_build(
             ordered.insert(ordered.begin(), inner);
             ordered.insert(ordered.begin(), outer);
         }
-        fused_idxs[grid_map[i]].push_back(v);
+        fused_idxs[grid_map[i]].push_back(std::move(v));
         schedule.reorder(ordered);
     }
 
