@@ -32,10 +32,14 @@ reorder_config_t::reorder_config_t(
     reorder::normalize(compute_src, compute_dst);
     src_layout().set_compute(compute_src);
     dst_layout().set_compute(compute_dst);
-    dim_idx_t ndims = compute_src.ndims();
-    auto rev_tiles = reorder::tiles(
-            compute_src, compute_dst, /*max_elems=*/256, /*strict=*/true);
+
+    auto dst_elems = utils::rnd_up_pow2(dst.elems());
+    auto max_elem_size = std::max(src.type().size(), dst.type().size());
+    auto max_elems = std::min(dst_elems, (dim_t)1024 / max_elem_size);
+    auto rev_tiles = reorder::tiles(compute_src, compute_dst, max_elems);
     tiles_.assign(rev_tiles.rbegin(), rev_tiles.rend());
+
+    dim_idx_t ndims = compute_src.ndims();
     tg_tile_idx_ = ndims;
     auto thr_tile = tiles_.front();
 
