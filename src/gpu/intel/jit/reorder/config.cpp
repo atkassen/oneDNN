@@ -36,7 +36,7 @@ reorder_config_t::reorder_config_t(
     auto dst_elems = utils::rnd_up_pow2(dst.elems());
     auto max_elem_size = std::max(src.type().size(), dst.type().size());
     auto max_elems = std::min(dst_elems, (dim_t)1024 / max_elem_size);
-    auto rev_tiles = reorder::tiles(compute_src, compute_dst, max_elems);
+    auto rev_tiles = reorder::tiles(compute_src, compute_dst, max_elems, true);
     tiles_.assign(rev_tiles.rbegin(), rev_tiles.rend());
 
     dim_idx_t ndims = compute_src.ndims();
