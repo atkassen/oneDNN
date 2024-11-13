@@ -71,9 +71,7 @@ std::vector<checkpoint_t> checkpoints(const std::vector<layout_t> &layouts,
         for (auto eb : layout.enumerated_blocks()) {
             auto &block = eb.second;
             if (block.dim_idx != dim_idx) continue;
-            if (layout.is_outermost(eb))
-                block.block = strict ? utils::rnd_up_pow2(block.block)
-                                     : runtime_dim();
+            if (layout.is_outermost(eb) && !strict) block.block = runtime_dim();
             dim_blocks.push_back(eb);
         }
         tail_flags.push_back(dim_blocks.size());
