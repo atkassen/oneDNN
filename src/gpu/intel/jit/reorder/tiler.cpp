@@ -71,7 +71,9 @@ std::vector<checkpoint_t> checkpoints(const std::vector<layout_t> &layouts,
         for (auto eb : layout.enumerated_blocks()) {
             auto &block = eb.second;
             if (block.dim_idx != dim_idx) continue;
-            if (layout.is_outermost(eb) && !strict) block.block = runtime_dim();
+            if (layout.is_outermost(eb))
+                block.block = strict ? utils::rnd_up_pow2(block.block)
+                                     : runtime_dim();
             dim_blocks.push_back(eb);
         }
         tail_flags.push_back(dim_blocks.size());
@@ -264,7 +266,7 @@ block_t next_block(const std::vector<layout_t> &layouts,
             auto &dim = dims_[b.dim_idx];
             auto &dim_state = state[b.dim_idx];
             if (!dim_state.has_next()) continue;
-            auto block = *state[b.dim_idx];
+            auto block = *dim_state;
             if (l.is_outermost(eb) && !strict) {
                 outer_stride = stride * dim;
                 if (l.ndims() > 1 && dim >= 16) continue;
@@ -276,11 +278,15 @@ block_t next_block(const std::vector<layout_t> &layouts,
                 skip_mask |= (1 << b.dim_idx);
                 continue;
             }
-            if (dim % b.block == 0) {
-                dim /= b.block;
+            auto b_block = b.block;
+            if (l.is_outermost(eb))
+                b_block = utils::rnd_up_pow2(b_block);
+            else if (dim % b_block == 0) {
+                dim /= b_block;
+                outer_stride *= b_block;
                 continue;
             }
-            auto step = math::gcd(dim, b.block);
+            auto step = math::gcd(dim, b_block);
             options.emplace_back(b.dim_idx, block, stride * step, l.type());
             break;
         }
