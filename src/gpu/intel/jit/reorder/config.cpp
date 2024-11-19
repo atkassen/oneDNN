@@ -27,6 +27,7 @@ reorder_config_t::reorder_config_t(
     src_layout().set_user(src);
     dst_layout().set_user(dst);
     set_exec_cfg(ec);
+    const auto &hw = ec.hw();
 
     layout_t compute_src = src, compute_dst = dst;
     reorder::normalize(compute_src, compute_dst);
@@ -37,7 +38,15 @@ reorder_config_t::reorder_config_t(
     auto max_elem_size = std::max(src.type().size(), dst.type().size());
     auto max_elems = std::min(dst_elems, (dim_t)1024 / max_elem_size);
     auto rev_tiles = reorder::tiles(compute_src, compute_dst, max_elems, true);
-    tiles_.assign(rev_tiles.rbegin(), rev_tiles.rend());
+    auto threads = hw.eu_count() * hw.threads_per_eu();
+    auto max_wgs = utils::div_up(threads, ec.simd());
+    auto front = rev_tiles.rbegin();
+    const auto back = rev_tiles.rend();
+    for (; front != back; ++front) {
+        auto wgs = utils::div_up(dst_elems, front->elems());
+        if (2 * wgs >= max_wgs || front + 1 == back) break;
+    }
+    tiles_.assign(front, back);
 
     dim_idx_t ndims = compute_src.ndims();
     tg_tile_idx_ = ndims;
