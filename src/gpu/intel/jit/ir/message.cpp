@@ -384,6 +384,7 @@ public:
         : layout_(layout)
         , grf_size_(grf_size)
         , type_size_(layout.type().size())
+        , elems_per_byte_(8 * type_size_ / layout.type().with_elems(8).size())
         , idxs_(layout.blocks().size()) {}
 
     int offset_bytes() const { return off_bytes_; }
@@ -401,12 +402,13 @@ public:
     // - The last element must not cross the layout boundary
     bool can_advance(int stride, int elems, bool is_last_region = false) {
         if (is_last_region) elems = std::min(elems, remaining_elems());
+        const auto stride_bytes
+                = utils::div_up(stride * type_size_, elems_per_byte_);
         auto cur_idxs = idxs_;
         int cur_off_bytes = off_bytes_;
         for (int i = 0; i < elems - 1; i++) {
             int next_off_bytes = advance(cur_idxs, cur_off_bytes);
-            if (next_off_bytes - cur_off_bytes != stride * type_size_)
-                return false;
+            if (next_off_bytes - cur_off_bytes != stride_bytes) return false;
             cur_off_bytes = next_off_bytes;
         }
         cur_off_bytes = advance(cur_idxs, cur_off_bytes);
@@ -441,12 +443,13 @@ private:
             int stride = (int)layout_.blocks()[i].stride;
             off += idxs[i] * stride;
         }
-        return off * type_size_;
+        return utils::div_up(off * type_size_, elems_per_byte_);
     }
 
     layout_t layout_;
     int grf_size_;
     int type_size_;
+    int elems_per_byte_;
 
     std::vector<int> idxs_;
     int elems_ = 0;
