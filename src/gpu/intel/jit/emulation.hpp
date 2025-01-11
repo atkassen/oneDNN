@@ -591,7 +591,7 @@ struct EmulationImplementation {
         bool emulate64 = strategy.emulate64_mul;
 
         if (s0Q) {
-            if (!s1D || !dstQ) stub();
+            if ((!s1D && !(s1W && s1Immed)) || !dstQ) stub();
             auto temp = s1Signed ? state.temp[0].d() : state.temp[0].ud();
             auto &src1Reg = [&]() -> ngen::RegData & {
                 if (std::is_base_of<ngen::RegData, S1>::value)
