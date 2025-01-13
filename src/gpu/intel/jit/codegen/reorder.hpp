@@ -1302,8 +1302,8 @@ void align_src_dst_offset(GeneratorT *host, ngen_register_scope_t &scope,
     int dst_byte_off = dst.byte_offset();
     int esize = mod.getExecSize();
     int grf_size = ngen::GRF::bytes(scope.hw());
-    int grf_src = grf_size / src.hs();
-    int grf_dst = grf_size / dst.hs();
+    int grf_src = grf_size / (src.reg_data().getWidth() == 1 ? 1 : src.hs());
+    int grf_dst = grf_size / (dst.reg_data().getWidth() == 1 ? 1 : dst.hs());
 
     // If src is aligned with dst, return.
     if ((is_xf || is_bf_to_f) && src_off % grf_src == dst_off % grf_dst) return;
