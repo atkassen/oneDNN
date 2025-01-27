@@ -378,7 +378,7 @@ public:
     dim_idx_t ndims() const { return ndims_; }
 
     dim_t elems() const {
-        dim_t ret = 1;
+        dim_t ret = type().elems();
         for (auto &b : blocks_)
             ret *= b.block;
         return ret;
@@ -439,6 +439,7 @@ public:
 
     std::vector<dim_t> dims() const {
         std::vector<dim_t> dims(ndims(), 1);
+        if (!blocks_.empty()) dims[blocks_.front().dim_idx] *= type().elems();
         for (auto &b : blocks_) {
             dims[b.dim_idx] *= b.block;
         }
@@ -447,6 +448,8 @@ public:
 
     dim_t dim(dim_idx_t dim_idx) const {
         dim_t ret = 1;
+        if (!blocks_.empty() && blocks_.front().dim_idx == dim_idx)
+            ret *= type().elems();
         for (auto &b : blocks_) {
             if (b.dim_idx == dim_idx) ret *= b.block;
         }
@@ -526,7 +529,8 @@ public:
     template <typename T = expr_t>
     T offset_in_bytes(
             const std::vector<T> &args = {}, bool ignore_offset = false) const {
-        return offset(args, ignore_offset) * type().size();
+        const int type_packing = 8 * type().size() / type().bitsize();
+        return offset(args, ignore_offset) * type().size() / type_packing;
     }
 
     std::string desc_str(bool dnnl_style = false) const {
@@ -1542,7 +1546,8 @@ public:
 
     expr_t offset_in_bytes(const std::vector<expr_t> &vargs = {},
             bool ignore_offset = false) const {
-        return offset(vargs, ignore_offset) * type().size();
+        const int type_packing = 8 * type().size() / type().bitsize();
+        return offset(vargs, ignore_offset) * type().size() / type_packing;
     }
 
     int get_alignment(const constraint_set_t &cset) const {
