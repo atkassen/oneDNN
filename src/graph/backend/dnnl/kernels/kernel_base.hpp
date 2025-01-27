@@ -119,9 +119,11 @@ using FCreateKernel = std::function<kernel_ptr(void)>;
 #define DEF_KERNEL_METHOD_STR(name) \
     std::string str() const override { return #name; }
 
+// NOLINTBEGIN(bugprone-macro-parentheses)
 #define DNNL_DISALLOW_COPY_AND_ASSIGN(T) \
     T(const T &) = delete; \
     T &operator=(const T &) = delete;
+// NOLINTEND(bugprone-macro-parentheses)
 
 } // namespace dnnl_impl
 } // namespace graph
