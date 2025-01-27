@@ -158,6 +158,7 @@ public:
     int base() const { return rd_.getBase(); }
 
     int byte_offset() const { return rd_.getByteOffset(); }
+    int bit_offset() const { return offset() * rd_.getBits(); }
 
     int offset() const { return rd_.getOffset(); }
 
@@ -181,10 +182,8 @@ public:
         int beg_off = (byte_offset() + off_bytes) / grf_size;
         int end_off = (byte_offset() + off_bytes + len_bytes - 1) / grf_size;
 
-        // Check for out of bound accesses.
         if (get_grf_buf_index() + end_off >= reg_buf_->regs()) return false;
 
-        // Check if access is dense.
         if (is_dense) {
             int base0 = get_grf_base(beg_off);
             for (int i = beg_off + 1; i < end_off + 1; i++) {
@@ -209,8 +208,8 @@ public:
 
     // Retype register region while preserving data.
     reg_buf_data_t reinterpret(ngen::DataType new_type) const {
-        int new_size = ngen::getBytes(new_type);
-        int old_size = ngen::getBytes(type());
+        int new_size = ngen::getBits(new_type);
+        int old_size = ngen::getBits(type());
         if (new_size == old_size) {
             auto ret = *this;
             ret.rd_.setType(new_type);

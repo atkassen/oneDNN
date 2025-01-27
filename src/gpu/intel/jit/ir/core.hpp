@@ -1,4 +1,4 @@
-    /*******************************************************************************
+/*******************************************************************************
 * Copyright 2021-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
@@ -376,7 +376,7 @@ public:
             case type_kind_t::s32:
             case type_kind_t::u64:
             case type_kind_t::s64: {
-                int bits = with_elems(8).size() / size();
+                int bits = bitsize();
                 if (is_signed()) bits--;
                 T ret = T(1) << (bits - 1);
                 return ret + (ret - 1);
@@ -590,6 +590,14 @@ public:
 
     // Returns size in bytes.
     int size() const;
+
+    // Returns size in bits.
+    int bitsize() const {
+        // 8 elements occupy the same number of bytes that a single element
+        // occupies in bits.
+        constexpr int bits_per_byte = 8;
+        return with_elems(bits_per_byte * elems()).size();
+    }
 
     std::string str() const {
         std::ostringstream oss;

@@ -256,10 +256,10 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     }
 
     const int grf_size = ngen::GRF::bytes(hw);
-    int src_type_size = ngen::getBytes(src_type);
-    int dst_type_size = ngen::getBytes(dst_type);
-    int src_stride_bytes = src_stride * src_type_size;
-    int dst_stride_bytes = dst_stride * dst_type_size;
+    int src_type_bits = ngen::getBits(src_type);
+    int dst_type_bits = ngen::getBits(dst_type);
+    int src_stride_bytes = src_stride * src_type_bits / 8;
+    int dst_stride_bytes = dst_stride * dst_type_bits / 8;
     bool dst_u4 = dst_type == ngen::DataType::u4;
     bool dst_b = ngen_is_b(dst_type);
     bool dst_d = ngen_is_dw(dst_type);
@@ -286,10 +286,6 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     op_plan_t plan = grf_size;
     ngen_register_scope_t lex_scope {scope.register_allocator()};
 
-    // Workaround for hf8 size since its a placeholder type undefined in ngen.
-    if (src_hf8) src_stride_bytes = src_stride;
-    if (dst_hf8) dst_stride_bytes = dst_stride;
-
     auto get_step = [&]() {
         int step = (width < 16 ? 8 : 16);
 
@@ -309,8 +305,8 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
         if (src_stride > 4 || dst_stride > 4) step = 1;
 
         // Don't stride more than 4 bytes for word types.
-        if ((src_type_size == 2 && src_stride >= 4)
-                || (dst_type_size == 2 && dst_stride >= 4))
+        if ((src_type_bits == 16 && src_stride >= 4)
+                || (dst_type_bits == 16 && dst_stride >= 4))
             step = 1;
 
         // Non-power-of-2 strides must be handled element-by-element
@@ -324,9 +320,6 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
 
     using inst_mod_t = ngen::InstructionModifier;
     using reg_data_t = ngen::RegData;
-    auto shl4 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
-        host->eshl(mod, dst, src, 4);
-    };
     auto shl16 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         host->eshl(mod, dst, src, 16);
     };
@@ -343,14 +336,11 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     auto mov = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         host->emov(mod, dst, src);
     };
-    auto cvt_u8_to_u4x2 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
-        auto exec_size = mod.getExecSize();
-        host->sel(mod | host->lt, dst, src, 0xF);
-    };
 
-    // bf16 -> f32:
-    // - bf16 must be packed: use left shift instead.
-    if (src_bf && dst_f) {
+    if (src_b && dst_u4) {
+        auto sat = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
+
+        };
         int step = get_step();
         for (int i = 0; i < width; i += step) {
             step = std::min(step, width - i);
@@ -365,24 +355,19 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
         return;
     }
 
-    // f -> i4
-    if (src_f && dst_u4) {
-        const int nregs = utils::div_up(width * (int)sizeof(char), grf_size);
-        auto tmp = lex_scope.alloc_reg_buf_data(nregs).format(
-                0, ngen::DataType::ub);
-        emit_reorder_1d_tile(hw, host, scope, width, src, src_stride, tmp, 1);
+    // bf16 -> f32:
+    // - bf16 must be packed: use left shift instead.
+    if (src_bf && dst_f) {
         int step = get_step();
         for (int i = 0; i < width; i += step) {
             step = std::min(step, width - i);
             step = utils::rnd_down_pow2(step);
             int esize = step;
-            auto t = tmp.subregister(i, esize, 1, ngen::DataType::ub);
-            auto t2 = tmp.subregister(i + 1, esize - 1, 1, ngen::DataType::ub);
-            auto d = dst.subregister(i / 2, esize / 2, 1, ngen::DataType::ub);
-            plan(cvt_u8_to_u4x2, esize, t(1), t(1)); // int8 to int4 w/ sat
-            plan(shl4, esize / 2, t2(2), t2(2)); // int4 00XX 00XX to 00XX XX00
-            plan(host->or_, esize / 2, t(2), t2(2)); // pack int4
-            plan(mov, esize / 2, d(1), t(1)); // copy to dst
+            auto s = src.subregister(
+                    i, esize, src_stride_bytes, ngen::DataType::uw);
+            auto d = dst.subregister(
+                    i, esize, dst_stride_bytes, ngen::DataType::ud);
+            plan(shl16, esize, d(dst_stride), s(src_stride));
         }
         return;
     }

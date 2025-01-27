@@ -725,7 +725,6 @@ bool reorder_ir_builder_t::try_build(const std::vector<int> &iter_blocks,
     schedule.finalize();
 
     auto thr_tile = schedule.thr_view_tile(src_view, /*is_relative=*/false);
-
     auto src_thr_view = src_view.create_sub_view(thr_tile);
     auto dst_thr_view = dst_view.create_sub_view(thr_tile);
 

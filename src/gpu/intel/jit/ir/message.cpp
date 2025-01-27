@@ -209,6 +209,7 @@ public:
     memory_walker_t(const constraint_set_t &cset, const view_t &view)
         : view_(view)
         , type_size_(view.type().size())
+        , type_bitsize_(view.type().bitsize())
         , mask_tensor_(view.create_mask_tensor(cset).reinterpret(view.type()))
         , full_size_(view.velems() * type_size_) {
         init_dense_blocks(cset);
@@ -315,6 +316,7 @@ public:
 
 private:
     void init_dense_blocks(const constraint_set_t &cset) {
+        const int type_packing = 8 * type_size_ / type_bitsize_;
         auto l = view_.create_pseudo_vlayout();
         // Find the maximum innermost dense tile.
         stride_t stride = 1;
@@ -325,7 +327,7 @@ private:
             stride = b.block * b.stride;
         }
         tensor_t tile(dims);
-        dense_block_size_ = tile.elems() * type_size_;
+        dense_block_size_ = tile.elems() * type_size_ / type_packing;
         // Split the memory view into dense blocks and precompute block offsets
         // and alignments.
         view_.for_each_tile(tile, [&](const std::vector<dim_t> &start) {
@@ -368,6 +370,7 @@ private:
 
     view_t view_;
     int type_size_;
+    int type_bitsize_;
     mask_tensor_t mask_tensor_;
     std::vector<expr_t> block_offs_;
     std::vector<int> block_alignments_;
@@ -384,7 +387,7 @@ public:
         : layout_(layout)
         , grf_size_(grf_size)
         , type_size_(layout.type().size())
-        , elems_per_byte_(8 * type_size_ / layout.type().with_elems(8).size())
+        , elems_per_byte_(8 * type_size_ / layout.type().bitsize())
         , idxs_(layout.blocks().size()) {}
 
     int offset_bytes() const { return off_bytes_; }
@@ -475,6 +478,7 @@ access_builder_t::access_builder_t(ir_context_t &ir_ctx, const view_t &mem_view,
         if (sp && !sp.is_2d()) send_params.hint_2d = send_2d_hint_t();
         if (!sp) return;
         reg_layout_ = sp.reg_layout();
+        std::cout << "access builder reg layout: " << reg_layout_ << '\n';
         reg_buf_size_ = sp.reg_buf_size();
         stmt_ = sp.create_stmt(mem_buf, reg_buf);
         return;
@@ -884,6 +888,7 @@ bool access_builder_t::check_2d_mask(const tensor_t &tile,
 bool access_builder_t::try_build(
         const layout_t &try_layout, memory_walker_t &mem_walker) {
     auto &try_layout_blocks = try_layout.blocks();
+    const int type_packing = 8 * mem_type_.size() / mem_type_.bitsize();
     int reg_stride
             = (try_layout_blocks.empty() ? 0
                                          : (int)try_layout_blocks[0].stride);
@@ -905,16 +910,17 @@ bool access_builder_t::try_build(
             int nmasks = s.nmasks();
             int payload_stride = s.payload_type_stride();
             int access_size = s.access_size();
-            int access_elems = access_size / mem_type_.size();
+            int access_elems = access_size / mem_type_.size() * type_packing;
             bool is_last_chunk = mem_walker.remaining_size() <= access_size;
 
             if (reg_stride != 1 || payload_stride != slot_size) {
                 // Detected strided GRF layout or strided payload. In this
                 // case require full data type and stride match.
                 if (reg_stride != 0
-                        && payload_stride != reg_stride * mem_type_.size())
+                        && payload_stride * type_packing
+                                != reg_stride * mem_type_.size())
                     continue;
-                if (s.type.size() != mem_type_.size()) continue;
+                if (type_packing * s.type.size() != mem_type_.size()) continue;
             }
             // Prefetches don't have payload so skip these conditions for
             // prefetch.
@@ -949,7 +955,8 @@ bool access_builder_t::try_build(
         send_stmt = try_promote_to_lsc(send_stmt);
         stmt_ = stmt_.append(send_stmt);
 
-        reg_layout_walker_->advance(send.access_size() / mem_type_.size());
+        reg_layout_walker_->advance(
+                send.access_size() / mem_type_.size() * type_packing);
         mem_walker.advance(send.access_size());
     }
     reg_layout_ = try_layout;
@@ -1018,12 +1025,14 @@ stmt_t access_builder_t::create_send_stmt(
 
 static const int any_block = 0;
 
-send_2d_hint_t get_send_2d_hint(send_op_t send_op, const type_t &_type,
+send_2d_hint_t get_send_2d_hint(send_op_t send_op, const type_t &type,
         bool vnni, bool transpose, int w_tile, int h_tile,
         int w_blk = any_block, int h_blk = any_block) {
-    auto type = _type;
-
     gpu_assert(!(vnni && transpose)) << "VNNI with transpose is not supported.";
+
+    // Disable sub-byte types for now.
+    if (8 * type.size() != type.with_elems(8 * type.elems()).size())
+        return send_2d_hint_t();
 
     // XXX: Convert transpose to VNNI when transpose is not
     // supported. This will require additional reorder but
