@@ -128,6 +128,16 @@ private:
     grf_permutation_t grf_perm_;
 };
 
+class bytes_t {
+public:
+    explicit constexpr bytes_t(int size) : size_(size) {}
+
+    constexpr operator int() const { return size_; }
+
+private:
+    int size_ = 0;
+};
+
 // ngen::RegData wrapper attached to a register buffer.
 class reg_buf_data_t {
 public:
@@ -172,30 +182,60 @@ public:
         reg_buf_->set_grf_permutation(grf_perm);
     }
 
-    bool check_bounds(
-            int off_bytes, int len_bytes, bool is_dense = false) const {
-        gpu_assert(off_bytes >= 0);
-        gpu_assert(len_bytes >= 0);
-        if (len_bytes == 0) return true;
+    bool check_bounds2(int off, int elems, ngen::DataType type,
+            bool is_dense = false) const {
+        gpu_assert(off >= 0 && elems >= 0);
+        if (elems == 0) return true;
 
-        int grf_size = ngen::GRF::bytes(hw());
-        int beg_off = (byte_offset() + off_bytes) / grf_size;
-        int end_off = (byte_offset() + off_bytes + len_bytes - 1) / grf_size;
+        const int grf_bits = ngen::GRF::bytes(hw()) << 3;
+        const int type_bits = ngen::getBits(type);
+        int first_bit = bit_offset() + off * type_bits;
+        int last_bit = first_bit + elems * type_bits - 1;
+        int beg_off = first_bit / grf_bits;
+        int end_off = last_bit / grf_bits;
+
+        if (get_grf_buf_index() + end_off >= reg_buf_->regs()) return false;
+        if (!is_dense) return true;
+
+        int base0 = get_grf_base(beg_off);
+        for (int i = beg_off + 1; i <= end_off; ++i) {
+            if (get_grf_base(i) != base0 + i) return false;
+        }
+        return true;
+    }
+
+    bool check_bounds2(int off, int elems, bool is_dense = false) const {
+        return check_bounds2(off, elems, ngen::DataType::ub, is_dense);
+    }
+
+    bool check_bounds(bytes_t off, bytes_t len, bool is_dense = false) const {
+        gpu_assert(off >= 0);
+        gpu_assert(len >= 0);
+        if (len == 0) return true;
+
+        int grf_bits = ngen::GRF::bytes(hw()) * 8;
+        int beg_off = (bit_offset() + off * 8) / grf_bits;
+        int end_off = (bit_offset() + (off + len) * 8 - 1) / grf_bits;
 
         if (get_grf_buf_index() + end_off >= reg_buf_->regs()) return false;
 
         if (is_dense) {
             int base0 = get_grf_base(beg_off);
-            for (int i = beg_off + 1; i < end_off + 1; i++) {
+            for (int i = beg_off + 1; i <= end_off; i++) {
                 if (get_grf_base(i) != base0 + i) return false;
             }
         }
         return true;
     }
 
-    bool is_dense(int bytes) const {
-        gpu_assert(check_bounds(0, bytes)) << "Invalid access.";
-        return check_bounds(0, bytes, /*is_dense=*/true);
+    bool is_dense(bytes_t bytes) const {
+        gpu_assert(check_bounds(bytes_t {0}, bytes)) << "Invalid access.";
+        return check_bounds(bytes_t {0}, bytes, /*is_dense=*/true);
+    }
+
+    bool is_dense2(int bytes) const {
+        gpu_assert(check_bounds2(0, bytes)) << "Invalid access.";
+        return check_bounds2(0, bytes, /*is_dense=*/true);
     }
 
     bool operator==(const reg_buf_data_t &other) const {
@@ -217,7 +257,8 @@ public:
         } else if (new_size < old_size) {
             gpu_assert(rd_.getHS() <= 1) << "Can't reinterpret strided data to "
                                             "differently sized data type.";
-            return format(0, new_type, rd_.getWidth() * old_size / new_size, 1);
+            return format(bytes_t {0}, new_type,
+                    rd_.getWidth() * old_size / new_size, 1);
         } else {
             gpu_error_not_expected()
                     << "Can't reinterpret to larger data type.";
@@ -225,55 +266,110 @@ public:
         return reg_buf_data_t();
     }
 
-    ngen::Subregister subregister(int off_bytes,
-            ngen::DataType type = ngen::DataType::invalid) const {
-        gpu_assert(check_bounds(off_bytes, 1)) << "Invalid access.";
-        if (type == ngen::DataType::invalid) type = rd_.getType();
-        auto rd = format(off_bytes, type, 1, 0).reg_data();
-        return ngen::Subregister(rd, rd.getOffset(), rd.getType());
-    }
-
-    ngen::Subregister subregister(int off, int width, int stride_bytes,
+    reg_buf_data_t format2(int offset, int width = 1, int hstride = 0,
             ngen::DataType type = ngen::DataType::invalid) const {
         if (type == ngen::DataType::invalid) type = rd_.getType();
-        int off_bytes = off * stride_bytes;
+        const auto grf_bits = ngen::GRF::bytes(hw()) << 3;
+        const auto type_bits = ngen::getBits(type);
 
-        gpu_assert(check_bounds(off_bytes, stride_bytes * (width - 1)))
-                << "Invalid access.";
+        auto off_bits = bit_offset() + offset * type_bits;
+        auto new_base = off_bits / grf_bits;
+        auto new_off = off_bits % grf_bits;
 
-        auto rd = format(off_bytes, type, 1, 0).reg_data();
-        return ngen::Subregister(rd, rd.getOffset(), rd.getType());
-    }
-
-    // Format register region to parameters regardless of data.
-    reg_buf_data_t format(int off_bytes,
-            ngen::DataType type = ngen::DataType::invalid, int width = 1,
-            int hstride = 1) const {
-        if (type == ngen::DataType::invalid) type = rd_.getType();
-        auto grf_size = ngen::GRF::bytes(hw());
-        auto new_off = rd_.getByteOffset() + off_bytes;
-        auto new_grf_off = new_off % grf_size;
-        auto type_size = ngen::getBytes(type);
-        auto grf = get_grf(new_off / grf_size).retype(type);
-
-        gpu_assert(new_grf_off % type_size == 0);
+        gpu_assert(new_off % type_bits == 0);
 
         if (width == 1) {
             hstride = 0;
         } else if (hstride == 0) {
             gpu_assert(width == 1);
         } else {
-            int max_width = 32 / type_size;
+            const int max_width = 2 * grf_bits / (hstride * type_bits);
+            width = std::min({width, max_width, 16});
+        }
+        int vstride = width * hstride;
+
+        int region = ((width - 1) * hstride + 1);
+        gpu_assert(check_bounds2(offset, region, type)) << "Invalid access.";
+
+        auto ret = *this;
+        auto grf = get_grf(new_base).retype(type);
+        ret.rd_ = grf[new_off / type_bits](vstride, width, hstride);
+        return ret;
+    }
+
+    reg_buf_data_t format2(int offset, ngen::DataType type) const {
+        return format2(offset, 1, 0, type);
+    }
+
+    reg_buf_data_t format2(ngen::DataType type) const {
+        return format2(0, 1, 0, type);
+    }
+
+    ngen::Subregister subregister2(int offset, int width, int stride,
+            ngen::DataType type = ngen::DataType::invalid) const {
+        gpu_assert(check_bounds2(offset, 1)) << "Invalid access.";
+        auto rd = format2(offset, width, stride, type).reg_data();
+        return {rd, rd.getOffset(), rd.getType()};
+    }
+
+    ngen::Subregister subregister2(
+            int offset, ngen::DataType type = ngen::DataType::invalid) const {
+        return subregister2(offset, 1, 0, type);
+    }
+
+    ngen::Subregister subregister2(ngen::DataType type) const {
+        return subregister2(0, type);
+    }
+
+    ngen::Subregister subregister(
+            bytes_t off, ngen::DataType type = ngen::DataType::invalid) const {
+        gpu_assert(check_bounds(off, bytes_t{1})) << "Invalid access.";
+        if (type == ngen::DataType::invalid) type = rd_.getType();
+        auto rd = format(off, type, 1, 0).reg_data();
+        return ngen::Subregister(rd, rd.getOffset(), rd.getType());
+    }
+
+    ngen::Subregister subregister(int off, int width, bytes_t stride,
+            ngen::DataType type = ngen::DataType::invalid) const {
+        if (type == ngen::DataType::invalid) type = rd_.getType();
+        bytes_t offset {off * stride};
+
+        gpu_assert(check_bounds(offset, bytes_t {stride * (width - 1)}))
+                << "Invalid access.";
+
+        auto rd = format(offset, type, 1, 0).reg_data();
+        return ngen::Subregister(rd, rd.getOffset(), rd.getType());
+    }
+
+    // Format register region to parameters regardless of data.
+    reg_buf_data_t format(bytes_t off,
+            ngen::DataType type = ngen::DataType::invalid, int width = 1,
+            int hstride = 1) const {
+        if (type == ngen::DataType::invalid) type = rd_.getType();
+        auto grf_bits = ngen::GRF::bytes(hw()) * 8;
+        auto new_off = bit_offset() + off * 8;
+        auto new_grf_off = new_off % grf_bits;
+        auto type_bits = ngen::getBits(type);
+        auto grf = get_grf(new_off / grf_bits).retype(type);
+
+        gpu_assert(new_grf_off % type_bits == 0);
+
+        if (width == 1) {
+            hstride = 0;
+        } else if (hstride == 0) {
+            gpu_assert(width == 1);
+        } else {
+            int max_width = 32 * 8 / type_bits;
             width = std::min(width, max_width / hstride);
             width = std::min(width, 16);
         }
         int vstride = width * hstride;
 
-        int region_bytes = ((width - 1) * hstride + 1) * type_size;
-        gpu_assert(check_bounds(off_bytes, region_bytes)) << "Invalid access.";
+        bytes_t region {((width - 1) * hstride + 1) * type_bits / 8};
+        gpu_assert(check_bounds(off, region)) << "Invalid access.";
 
         auto ret = *this;
-        ret.rd_ = grf[new_grf_off / type_size](vstride, width, hstride);
+        ret.rd_ = grf[new_grf_off / type_bits](vstride, width, hstride);
         return ret;
     }
 
