@@ -83,7 +83,7 @@ status_t gen_reorder_t::pd_t::init(impl::engine_t *engine,
                               s32, s8, u8, f64),
             VERBOSE_UNSUPPORTED_DT);
     VDISPATCH_REORDER(utils::one_of(dst_dt, f32, f16, bf16, f8_e5m2, f8_e4m3,
-                              s32, s8, u8, u4, f64),
+                              s32, s8, u8, f64),
             VERBOSE_UNSUPPORTED_DT);
     VDISPATCH_REORDER(IMPLICATION(src_dt == f16 || dst_dt == f16,
                               device_info->has_native(f16)),
@@ -97,8 +97,6 @@ status_t gen_reorder_t::pd_t::init(impl::engine_t *engine,
             VERBOSE_UNSUPPORTED_DT_CFG);
     VDISPATCH_REORDER(IMPLICATION(src_dt == f64 || dst_dt == f64,
                               device_info->has_native(f64)),
-            VERBOSE_UNSUPPORTED_DT_CFG);
-    VDISPATCH_REORDER(IMPLICATION(dst_dt == u4, src_dt == f32),
             VERBOSE_UNSUPPORTED_DT_CFG);
 
     using sm = dnnl_primitive_attr::skip_mask_t;

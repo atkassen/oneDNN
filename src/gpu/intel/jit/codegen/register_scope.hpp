@@ -112,8 +112,8 @@ public:
         int regs = utils::div_up(type.elems() * stride_bytes, grf_size);
         auto buf = alloc_reg_buf(regs, bundle);
         reg_buf_data_t rbd(buf);
-        return rbd.format(0, to_ngen(type.scalar()), type.elems(),
-                stride_bytes / type_size);
+        return rbd.format2(0, type.elems(), stride_bytes / type_size,
+                to_ngen(type.scalar()));
     }
 
     ngen::GRF alloc(ngen::Bundle bundle = ngen::Bundle()) {
