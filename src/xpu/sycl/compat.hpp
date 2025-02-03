@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2024 Intel Corporation
+* Copyright 2024-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -33,7 +33,10 @@ void *get_native(const ::sycl::context &ctx);
 
 template <typename native_object_t, typename sycl_object_t>
 native_object_t get_native(const sycl_object_t &sycl_object) {
-    return reinterpret_cast<native_object_t>(get_native(sycl_object));
+    auto native_object
+            = reinterpret_cast<native_object_t>(get_native(sycl_object));
+    if (!native_object) std::cout << "sycl failure\n";
+    return native_object;
 }
 
 // Automatically use host_task if it is supported by compiler,
