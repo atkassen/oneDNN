@@ -136,9 +136,7 @@ public:
     // Creates an operand with the requested register region based on the
     // existing region. off - offset in elements of the region data type.
     ngen_operand_t sub_reg_data(int off, int exec_size) const {
-        int offset = off * reg_buf_data().hs();
-        auto rd = reg_buf_data().format2(
-                offset, exec_size, reg_buf_data().hs());
+        auto rd = reg_buf_data().format2(off, exec_size, reg_buf_data().hs());
         return ngen_operand_t(rd, exec_size);
     }
 
