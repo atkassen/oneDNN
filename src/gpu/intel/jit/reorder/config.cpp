@@ -87,7 +87,7 @@ reorder_config_t::reorder_config_t(
     auto &tg_idxs = ir_builder_t::tg_idxs();
     set_kernel_grid(
             {kernel_dims, std::vector<expr_t>(tg_idxs.begin(), tg_idxs.end())});
-    set_thread_group_grid({tg_dims, "tg_idx"});
+    set_thread_group_grid({tg_dims, "thr_idx"});
 }
 
 } // namespace jit
