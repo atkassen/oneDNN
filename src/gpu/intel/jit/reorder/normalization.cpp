@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2024 Intel Corporation
+* Copyright 2024-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -107,7 +107,8 @@ merge::type_t get_merge(const std::vector<tile_info_t> &infos,
                 && bit_set(merge_mask, i) && bit_set(merge_mask, j);
     };
     const auto &ref = infos[0];
-    if (!merge_ok(ref.inner.dim_idx, ref.outer.dim_idx)) return merge::none;
+    if (!merge_ok(ref.inner.dim_idx, ref.outer.dim_idx) || !ref.is_dense())
+        return merge::none;
     auto get_info_merge = [&](const tile_info_t &info) {
         if (!info.is_dense()) return merge::none;
         if (info.inner.dim_idx != ref.inner.dim_idx) return merge::none;
@@ -134,7 +135,8 @@ layout_t reduce(const layout_t &src) {
     std::vector<block_t> blocks;
     for (auto &b : src.blocks()) {
         if (b.block != 1) {
-            if (blocks.empty() || blocks.back().dim_idx != b.dim_idx) {
+            if (blocks.empty() || blocks.back().dim_idx != b.dim_idx
+                    || blocks.back().block * blocks.back().stride != b.stride) {
                 blocks.push_back(b);
             } else {
                 blocks.back().block *= b.block;
