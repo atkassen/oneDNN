@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2024 Intel Corporation
+* Copyright 2024-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -35,12 +35,17 @@ struct direct_copy_t : public primitive_t {
 
         status_t init(impl::engine_t *engine, impl::engine_t * /*src_engine*/,
                 impl::engine_t * /*dst_engine*/) {
+            memory_desc_wrapper src_mdw(src_md()), dst_mdw(dst_md());
+            VDISPATCH_REORDER(src_mdw.nelems() == dst_mdw.nelems(),
+                    VERBOSE_INCONSISTENT_MDS, "src", "dst");
+            // 0-element reorder is a no-op
+            if (dst_mdw.nelems() == 0) return status::success;
+
             VDISPATCH_REORDER(
                     attr()->has_default_values(), VERBOSE_UNSUPPORTED_ATTR);
             VDISPATCH_REORDER(
                     extra_ok(), VERBOSE_UNSUPPORTED_MD_FLAG, "extra_ok");
 
-            memory_desc_wrapper src_mdw(src_md()), dst_mdw(dst_md());
             VDISPATCH_REORDER(!src_mdw.has_runtime_dims_or_strides(),
                     VERBOSE_RUNTIMEDIM_UNSUPPORTED);
             VDISPATCH_REORDER(!dst_mdw.has_runtime_dims_or_strides(),
@@ -147,6 +152,8 @@ struct direct_copy_t : public primitive_t {
         auto *stream = utils::downcast<stream_t *>(ctx.stream());
 
         size_t size = memory_desc_wrapper(pd()->dst_md()).size();
+        if (!size) return status::success;
+
         auto &input = CTX_IN_STORAGE(DNNL_ARG_FROM);
         auto &output = CTX_OUT_STORAGE(DNNL_ARG_TO);
         auto &deps = stream->ctx().get_deps();
