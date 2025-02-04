@@ -1222,9 +1222,10 @@ private:
         auto *shuffle = e.as_ptr<shuffle_t>();
         if (shuffle && shuffle->is_broadcast()) return ngen_operand_t();
 
+        int stride
+                = res_type.with_elems(8).size() / e.type().with_elems(8).size();
         return ngen_operand_t(
-                scope.alloc_reg_data(e.type(), res_type.scalar().size()),
-                e.type().elems());
+                scope.alloc_reg_data(e.type(), stride), e.type().elems());
     }
 
     void bind(const expr_t &e, const ngen_operand_t &op) {
