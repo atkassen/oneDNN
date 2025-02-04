@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2024 Intel Corporation
+* Copyright 2024-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -23,21 +23,18 @@ namespace intel {
 namespace jit {
 
 reorder_config_t::reorder_config_t(
-        const exec_config_t &ec, const layout_t &src, const layout_t &dst) {
-    src_layout().set_user(src);
-    dst_layout().set_user(dst);
+        const exec_config_t &ec, layout_t src, layout_t dst) {
     set_exec_cfg(ec);
     const auto &hw = ec.hw();
 
-    layout_t compute_src = src, compute_dst = dst;
-    reorder::normalize(compute_src, compute_dst);
-    src_layout().set_compute(compute_src);
-    dst_layout().set_compute(compute_dst);
+    reorder::normalize(src, dst);
+    src_layout().set_user(src);
+    dst_layout().set_user(dst);
 
     auto dst_elems = utils::rnd_up_pow2(dst.elems());
     auto max_elem_size = std::max(src.type().size(), dst.type().size());
     auto max_elems = std::min(dst_elems, (dim_t)1024 / max_elem_size);
-    auto rev_tiles = reorder::tiles(compute_src, compute_dst, max_elems, true);
+    auto rev_tiles = reorder::tiles(src, dst, max_elems, true);
     auto threads = hw.eu_count() * hw.threads_per_eu();
     auto max_wgs = utils::div_up(threads, ec.simd());
     auto front = rev_tiles.rbegin();
@@ -48,7 +45,7 @@ reorder_config_t::reorder_config_t(
     }
     tiles_.assign(front, back);
 
-    dim_idx_t ndims = compute_src.ndims();
+    dim_idx_t ndims = src.ndims();
     tg_tile_idx_ = ndims;
     auto thr_tile = tiles_.front();
 
@@ -61,7 +58,7 @@ reorder_config_t::reorder_config_t(
 
     for (dim_idx_t i = 0; i < ndims; ++i) {
         dim_t tg_dim = thr_tile(i);
-        dim_t outer = utils::div_up(compute_dst.dim(i), tg_dim);
+        dim_t outer = utils::div_up(dst.dim(i), tg_dim);
         vdims_[i] = outer * tg_dim;
         grid_map_[i] = grid_idx;
 

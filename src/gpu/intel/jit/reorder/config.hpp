@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2022-2024 Intel Corporation
+* Copyright 2022-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -50,8 +50,7 @@ public:
 
     int pad_block(const pvar_t &d) const override { return 0; }
 
-    reorder_config_t(
-            const exec_config_t &ec, const layout_t &src, const layout_t &dst);
+    reorder_config_t(const exec_config_t &ec, layout_t src, layout_t dst);
 
     const std::vector<tensor_t> &tiles() const { return tiles_; }
     const std::vector<dim_idx_t> &grid_map() const { return grid_map_; }
