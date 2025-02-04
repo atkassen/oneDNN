@@ -478,7 +478,6 @@ access_builder_t::access_builder_t(ir_context_t &ir_ctx, const view_t &mem_view,
         if (sp && !sp.is_2d()) send_params.hint_2d = send_2d_hint_t();
         if (!sp) return;
         reg_layout_ = sp.reg_layout();
-        std::cout << "access builder reg layout: " << reg_layout_ << '\n';
         reg_buf_size_ = sp.reg_buf_size();
         stmt_ = sp.create_stmt(mem_buf, reg_buf);
         return;
