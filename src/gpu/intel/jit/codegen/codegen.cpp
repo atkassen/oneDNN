@@ -283,19 +283,20 @@ public:
         auto mask_op = eval(obj.mask, scope);
 
         auto &type = obj.value.type();
+        auto scalar_type = type.scalar();
 
         int stride;
         if (obj.has_default_stride()) {
             stride = 1;
         } else {
-            gpu_assert(obj.stride % type.scalar().size() == 0);
-            stride = obj.stride / type.scalar().size();
+            gpu_assert(obj.stride % scalar_type.size() == 0);
+            stride = obj.stride / scalar_type.size();
         }
 
         ngen::InstructionModifier mod = type.elems();
         if (!mask_op.is_invalid()) mod |= mask_op.flag_register_mod();
-        auto dst_rbd = buf_op.reg_buf_data().format2(
-                off, type.elems(), stride, to_ngen(type.scalar()));
+        auto dst_rbd = buf_op.reg_buf_data().format2(off / scalar_type.size(),
+                type.elems(), stride, to_ngen(scalar_type));
         ngen_operand_t dst(dst_rbd, mod);
         eval(obj.value, scope, dst, obj.fill_mask0 && !mask_op.is_invalid());
     }
@@ -1031,18 +1032,19 @@ public:
 
     void _visit(const load_t &obj) override {
         auto &type = obj.type;
+        auto scalar_type = type.scalar();
         auto buf_op = eval(obj.buf);
         auto off_op = eval(obj.off);
         int stride;
         if (obj.has_default_stride()) {
             stride = 1;
         } else {
-            gpu_assert(obj.stride % type.scalar().size() == 0);
-            stride = obj.stride / type.scalar().size();
+            gpu_assert(obj.stride % scalar_type.size() == 0);
+            stride = obj.stride / scalar_type.size();
         }
-        auto load_rbd
-                = buf_op.reg_buf_data().format2(to_cpp<int>(off_op.immediate()),
-                        type.elems(), stride, to_ngen(type.scalar()));
+        int off = to_cpp<int>(off_op.immediate());
+        auto load_rbd = buf_op.reg_buf_data().format2(off / scalar_type.size(),
+                type.elems(), stride, to_ngen(scalar_type));
         bind(obj, load_rbd);
     }
 
