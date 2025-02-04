@@ -84,7 +84,9 @@ reorder_config_t::reorder_config_t(
     local[0] *= ec.simd();
 
     nd_range_ = compute::nd_range_t(global, local);
-    set_kernel_grid({kernel_dims, "grid_idx"});
+    auto &tg_idxs = ir_builder_t::tg_idxs();
+    set_kernel_grid(
+            {kernel_dims, std::vector<expr_t>(tg_idxs.begin(), tg_idxs.end())});
     set_thread_group_grid({tg_dims, "tg_idx"});
 }
 
