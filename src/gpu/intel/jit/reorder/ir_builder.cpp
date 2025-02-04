@@ -95,7 +95,6 @@ dim_t reorder_ir_builder_t::count_scattered_messages(
 dim_t reorder_ir_builder_t::message_latency(
         const exec_config_t &exec_cfg, const layout_t &l, const tensor_t &t) {
     const auto grf_size = exec_cfg.grf_size();
-    const int scattered_message_penalty = 4;
     bool can_use_block_messages = true;
     std::vector<dim_t> outer = t.dims();
     dim_t inner_elems = 1;
@@ -117,8 +116,7 @@ dim_t reorder_ir_builder_t::message_latency(
         outer[dim_idx] = utils::div_up(outer[dim_idx], block);
     }
 
-    auto type_size = l.type().scalar().size();
-    auto inner_bytes = inner_elems * type_size;
+    auto inner_bytes = l.type().with_elems(inner_elems).size();
     auto iterations = tensor_t(outer).elems();
     can_use_block_messages &= (inner_bytes % 16 == 0);
     can_use_block_messages &= (iterations == 1 || inner_bytes % grf_size == 0);
@@ -127,8 +125,9 @@ dim_t reorder_ir_builder_t::message_latency(
 
     return can_use_block_messages
             ? count_block_messages(exec_cfg, inner_bytes, iterations)
-            : count_scattered_messages(exec_cfg, inner_bytes, iterations)
-                    * scattered_message_penalty;
+            : count_scattered_messages(exec_cfg, inner_bytes, iterations) * 8
+                    * std::max(4, l.type().scalar().size())
+                    / l.type().with_elems(8).size();
 }
 
 void reorder_ir_builder_t::compute_blocks(const exec_config_t &exec_cfg,
