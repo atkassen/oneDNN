@@ -276,9 +276,7 @@ public:
         return format(offset, 1, 1, type);
     }
 
-    reg_buf_data_t format(ngen::DataType type) const {
-        return format(0, 1, 0, type);
-    }
+    reg_buf_data_t format(ngen::DataType type) const { return format(0, type); }
 
     ngen::Subregister subregister(int offset, int width, int stride,
             ngen::DataType type = ngen::DataType::invalid) const {
