@@ -34,7 +34,7 @@ int type_t::size() const {
     if (is_ptr()) return sizeof(uint64_t);
 
     if (is_bool()) return utils::div_up(elems(), 8);
-    if (is_x4()) return utils::div_up(elems(), 2);
+    if (is_x4() || is_fp4()) return utils::div_up(elems(), 2);
 
     if (elems() != 1) return elems() * scalar().size();
 
