@@ -280,7 +280,6 @@ public:
 
     ngen::Subregister subregister(int offset, int width, int stride,
             ngen::DataType type = ngen::DataType::invalid) const {
-        gpu_assert(check_bounds(offset, 1)) << "Invalid access.";
         auto rd = format(offset * stride, width, stride, type).reg_data();
         return {rd, rd.getOffset(), rd.getType()};
     }
