@@ -204,7 +204,8 @@ bool try_emit_batched_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             esize = utils::rnd_down_pow2(esize);
 
             auto s = src.subregister(ii, esize, 1);
-            auto t = tmp.subregister(dst_off + (ii - i_beg), small_type)(4);
+            auto t = tmp.subregister(
+                    dst_off + (ii - i_beg), esize, 4, small_type)(4);
             ngen::InstructionModifier mod = esize;
             if (src_type == ngen::DataType::f && hw == ngen::HW::Gen9)
                 host->rnde(esize, s(1), s(1));
@@ -217,7 +218,8 @@ bool try_emit_batched_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             esize = utils::rnd_down_pow2(esize);
 
             auto d = dst.subregister(ii, esize, 1);
-            auto t = tmp.subregister(dst_off + (ii - i_beg), small_type)(4);
+            auto t = tmp.subregister(
+                    dst_off + (ii - i_beg), esize, 4, small_type)(4);
             plan(mov, esize, d(1), t);
             ii += esize;
         }
