@@ -194,7 +194,7 @@ bool try_emit_batched_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     };
 
     // Do not attempt to match offsets when not moving data between pipes
-    const auto dst_off = (to_ir(dst_type).is_fp()) ? dst.byte_offset() : 0;
+    const auto dst_off = (to_ir(dst_type).is_fp()) ? dst.offset() : 0;
     for (int i = 0; i < width; i += batch) {
         int i_beg = i;
         int i_end = std::min(width, i + batch);
@@ -204,8 +204,7 @@ bool try_emit_batched_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             esize = utils::rnd_down_pow2(esize);
 
             auto s = src.subregister2(ii, esize, 1);
-            auto t = tmp.subregister2(dst_off + (ii - i_beg) * 4, small_type)(
-                    4);
+            auto t = tmp.subregister2(dst_off + (ii - i_beg), small_type)(4);
             ngen::InstructionModifier mod = esize;
             if (src_type == ngen::DataType::f && hw == ngen::HW::Gen9)
                 host->rnde(esize, s(1), s(1));
@@ -218,8 +217,7 @@ bool try_emit_batched_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             esize = utils::rnd_down_pow2(esize);
 
             auto d = dst.subregister2(ii, esize, 1);
-            auto t = tmp.subregister2(dst_off + (ii - i_beg) * 4, small_type)(
-                    4);
+            auto t = tmp.subregister2(dst_off + (ii - i_beg), small_type)(4);
             plan(mov, esize, d(1), t);
             ii += esize;
         }
@@ -824,7 +822,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
                 if (hw != ngen::HW::Gen9) {
                     plan(mov, esize | host->sat, d(dst_stride), s(src_stride));
                 } else {
-                    gpu_assert(dst_stride_bytes % tmp_stride_bytes == 0);
+                    gpu_assert(dst_stride % tmp_stride == 0);
                     auto d_f = dst.format2(i, esize, dst_stride / tmp_stride,
                             ngen::DataType::f);
                     plan(mov, esize, d_f, s(src_stride));
@@ -1010,7 +1008,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
                     plan(mov, esize | host->sat, t, s(src_stride));
                     if (offset_bytes != 4 * (d.getByteOffset() % 16)) {
                         auto t2 = tmp2.subregister2(
-                                4 * (d.getByteOffset() % 16), dst_type)(4);
+                                d.getByteOffset() % 16, esize, 4, dst_type)(4);
                         plan(mov, esize, t2, t);
                         t = t2;
                     }
@@ -1208,7 +1206,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
                 const int tmp_rel_stride = tmp_stride / dst_stride;
                 const int tmp_alignment_bdy = grf_size / tmp_rel_stride;
                 const int tmp_aligned_offset = d.offset() % tmp_alignment_bdy;
-                const int tmp_offset = tmp_rel_stride * tmp_aligned_offset;
+                const int tmp_offset = tmp_stride * tmp_aligned_offset;
                 const int allowed_bytes = 2 * grf_size - tmp_offset;
 
                 if ((mod.getExecSize() - 1) * tmp_stride + 1 > allowed_bytes) {
