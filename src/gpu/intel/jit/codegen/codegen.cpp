@@ -561,7 +561,7 @@ private:
 
         auto &buf = op_buf.reg_buf_data();
         int size = send_func.payload_size();
-        bool is_dense = buf.is_dense2(size);
+        bool is_dense = buf.is_dense(size);
         if (is_dense) return ngen::GRF(buf.base());
 
         if (send_func.is_load() || send_func.is_load_2d()) {
@@ -585,7 +585,7 @@ private:
         for (int i = 0; i < regs;) {
             auto sub_buf = buf.format(i * grf_elems);
             int step = std::min(max_step, regs - i);
-            if (step > 1 && !sub_buf.is_dense2(step * grf_size)) step = 1;
+            if (step > 1 && !sub_buf.is_dense(step * grf_size)) step = 1;
             int esize = step * dwords;
             auto src = sub_buf.subregister(ngen::DataType::ud)(1);
             auto dst = tmp[i].ud(0)(1);

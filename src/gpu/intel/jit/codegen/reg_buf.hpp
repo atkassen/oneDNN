@@ -208,7 +208,7 @@ public:
         return check_bounds(off, elems, ngen::DataType::ub, is_dense);
     }
 
-    bool is_dense2(int bytes) const {
+    bool is_dense(int bytes) const {
         gpu_assert(check_bounds(0, bytes)) << "Invalid access.";
         return check_bounds(0, bytes, /*is_dense=*/true);
     }
