@@ -287,7 +287,7 @@ public:
 
     ngen::Subregister subregister(
             int offset, ngen::DataType type = ngen::DataType::invalid) const {
-        return subregister(offset, 1, 0, type);
+        return subregister(offset, 1, 1, type);
     }
 
     ngen::Subregister subregister(ngen::DataType type) const {
