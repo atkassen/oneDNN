@@ -81,9 +81,9 @@ public:
                         if (same_src_dst) return;
                     }
 
-                    auto d = dst_rd.format2(
+                    auto d = dst_rd.format(
                             dst_off, tile_elems, 1, to_ngen(dst_type));
-                    auto s = src_rd.format2(
+                    auto s = src_rd.format(
                             src_off, tile_elems, src_stride, to_ngen(src_type));
                     bool s_half_grf_aligned
                             = utils::one_of(s.byte_offset(), 0, grf_size / 2);
@@ -107,7 +107,7 @@ public:
                                 tmp_type.with_elems(tile_elems));
                         emit_reorder_1d_tile(hw_, host, tile_scope, tile_elems,
                                 s, src_stride, tmp, 1);
-                        s = tmp.format2(0, tile_elems, 1, to_ngen(tmp_type));
+                        s = tmp.format(0, tile_elems, 1, to_ngen(tmp_type));
                     }
                     align_src_dst_offset(host, tile_scope, tile_elems, d, s);
                     host->add(tile_elems, d.reg_data(), d.reg_data(),
