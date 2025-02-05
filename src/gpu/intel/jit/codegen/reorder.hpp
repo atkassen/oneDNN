@@ -243,18 +243,10 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     ngen::DataType dst_type = dst.type();
     // Replace (float -> float) by (int -> int) as word/dword moves have less
     // restrictions.
-    if (src_type == dst_type
-            && utils::one_of(src_type, ngen::DataType::bf, ngen::DataType::hf,
-                    ngen::DataType::f, ngen::DataType::df)) {
-        int factor = (src_type == ngen::DataType::df ? 2 : 1);
-        if (factor == 1 || (src_stride == 1 && dst_stride == 1)) {
-            src_type
-                    = to_ngen(type_t::u(ngen::getBytes(src_type) / factor * 8));
-            dst_type = src_type;
-            width *= factor;
-            src = src.reinterpret(src_type);
-            dst = dst.reinterpret(dst_type);
-        }
+    if (src_type == dst_type && to_ir(src_type).is_fp()) {
+        src_type = dst_type = to_ngen(type_t::u(ngen::getBytes(src_type) * 8));
+        src = src.reinterpret(src_type);
+        dst = dst.reinterpret(dst_type);
     }
 
     const int grf_size = ngen::GRF::bytes(hw);
@@ -301,7 +293,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
                         || !dst.check_bounds(0, 64, /*is_dense=*/true)))
             step = 8;
 
-        if (src_df || dst_df) step = 8;
+        if (src_df || src_q || dst_df || dst_q) step = 8;
 
         // Max supported stride is 4.
         if (src_stride > 4 || dst_stride > 4) step = 1;
@@ -313,9 +305,6 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
 
         // Non-power-of-2 strides must be handled element-by-element
         if (!math::is_pow2(src_stride) || !math::is_pow2(dst_stride)) step = 1;
-
-        // Qword does not appear to support swizzling.
-        if (src_q && dst_q && src_stride != dst_stride) step = 1;
 
         return step;
     };
@@ -338,6 +327,33 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     auto mov = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         host->emov(mod, dst, src);
     };
+
+    // (Usually) df -> df
+    if (src_q && dst_q && src_type == dst_type) {
+        auto src0 = src.format(0, ngen::DataType::ud);
+        auto dst0 = dst.format(0, ngen::DataType::ud);
+        auto src1 = src.format(1, ngen::DataType::ud);
+        auto dst1 = dst.format(1, ngen::DataType::ud);
+        src_stride *= 2;
+        dst_stride *= 2;
+        int step = get_step();
+        for (int i = 0; i < width; i += step) {
+            step = std::min(step, width - i);
+            step = utils::rnd_down_pow2(step);
+            int esize = step;
+            auto s0 = src0.subregister(i, esize, src_stride);
+            auto d0 = dst0.subregister(i, esize, dst_stride);
+            auto s1 = src1.subregister(i, esize, src_stride);
+            auto d1 = dst1.subregister(i, esize, dst_stride);
+            if (esize == 1 || (src_stride == 1 && dst_stride == 1)) {
+                plan(mov, 2 * esize, d0(1), s0(1));
+                continue;
+            }
+            plan(mov, esize, d0(dst_stride), s0(src_stride));
+            plan(mov, esize, d1(dst_stride), s1(src_stride));
+        }
+        return;
+    }
 
     // bf16 -> f32:
     // - bf16 must be packed: use left shift instead.
@@ -893,7 +909,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
 
             auto s = src.subregister(i, esize, src_stride);
             auto d = dst.subregister(i, esize, dst_stride);
-            auto t = tmp.subregister(s.getOffset() / 2, tmp_type);
+            auto t = tmp.subregister(s.getOffset() * 2, tmp_type);
             plan(mov, esize, t(tmp_stride), s(src_stride));
             plan(mov, esize, d.d()(dst_stride), t.d()(tmp_stride));
         }
@@ -1356,11 +1372,11 @@ public:
         tile_to_2d_dims(tile_, a_idx, b_idx, tile_a, tile_b);
 
         // Convert src/dst to 2D layouts.
-        dim_assignment_t to_ab(src_.ndims(), 2);
+        dim_assignment_t to_ab(src_layout.ndims(), 2);
         to_ab.assign(a_idx, 0);
         to_ab.assign(b_idx, 1);
-        auto src_ab = to_ab.map(src_);
-        auto dst_ab = to_ab.map(dst_);
+        auto src_ab = to_ab.map(src_layout);
+        auto dst_ab = to_ab.map(dst_layout);
 
         src_ = src_ab;
         dst_ = dst_ab;
@@ -1894,8 +1910,6 @@ private:
         const int grf_size = ngen::GRF::bytes(hw_);
 
         if (src_layout_.type() != dst_layout_.type()) return false;
-        // long / f64 swizzle emits scalar instructions
-        if (src_layout_.type().scalar().size() >= 8) return false;
         if (!src_layout_.is_dense()) return false;
         if (!dst_layout_.is_dense()) return false;
 
