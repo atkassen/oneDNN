@@ -1479,8 +1479,8 @@ private:
         for (int i = 0; i < inner_idx_; i++) {
             inner_elems *= (int)blocks[i].block;
         }
-        ir_assert(total_elems % elems_per_byte == 0);
-        ir_assert(inner_elems % elems_per_byte == 0);
+        gpu_assert(total_elems % elems_per_byte == 0);
+        gpu_assert(inner_elems % elems_per_byte == 0);
 
         int inner_bytes = inner_elems * type_size / elems_per_byte;
         int total_bytes = total_elems * type_size / elems_per_byte;

@@ -257,8 +257,8 @@ public:
         } else if (new_size < old_size) {
             gpu_assert(rd_.getHS() <= 1) << "Can't reinterpret strided data to "
                                             "differently sized data type.";
-            return format(bytes_t {0}, new_type,
-                    rd_.getWidth() * old_size / new_size, 1);
+            return format2(
+                    0, rd_.getWidth() * old_size / new_size, 1, new_type);
         } else {
             gpu_error_not_expected()
                     << "Can't reinterpret to larger data type.";
@@ -283,7 +283,7 @@ public:
         } else if (hstride == 0) {
             gpu_assert(width == 1);
         } else {
-            const int max_width = 2 * grf_bits / (hstride * type_bits);
+            const int max_width = 32 * 8 / (hstride * type_bits);
             width = std::min({width, max_width, 16});
         }
         int vstride = width * hstride;
@@ -298,7 +298,7 @@ public:
     }
 
     reg_buf_data_t format2(int offset, ngen::DataType type) const {
-        return format2(offset, 1, 0, type);
+        return format2(offset, 1, 1, type);
     }
 
     reg_buf_data_t format2(ngen::DataType type) const {
@@ -308,7 +308,7 @@ public:
     ngen::Subregister subregister2(int offset, int width, int stride,
             ngen::DataType type = ngen::DataType::invalid) const {
         gpu_assert(check_bounds2(offset, 1)) << "Invalid access.";
-        auto rd = format2(offset, width, stride, type).reg_data();
+        auto rd = format2(offset * stride, width, stride, type).reg_data();
         return {rd, rd.getOffset(), rd.getType()};
     }
 

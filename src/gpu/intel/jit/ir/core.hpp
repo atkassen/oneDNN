@@ -376,7 +376,7 @@ public:
             case type_kind_t::s32:
             case type_kind_t::u64:
             case type_kind_t::s64: {
-                int bits = bitsize();
+                int bits = scalar().bitsize();
                 if (is_signed()) bits--;
                 T ret = T(1) << (bits - 1);
                 return ret + (ret - 1);
