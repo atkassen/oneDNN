@@ -292,7 +292,7 @@ public:
 
         ngen::InstructionModifier mod = type.elems();
         if (!mask_op.is_invalid()) mod |= mask_op.flag_register_mod();
-        auto dst_rbd = buf_op.reg_buf_data().format2(off / scalar_type.size(),
+        auto dst_rbd = buf_op.reg_buf_data().format(off / scalar_type.size(),
                 type.elems(), stride, to_ngen(scalar_type));
         ngen_operand_t dst(dst_rbd, mod);
         eval(obj.value, scope, dst, obj.fill_mask0 && !mask_op.is_invalid());
@@ -430,7 +430,7 @@ private:
         ngen::RegData src0;
         auto &src0_op = dpas_t::arg_src0(args);
         if (!src0_op.is_immediate()) {
-            auto src0_rbd = src0_op.reg_buf_data().format2(
+            auto src0_rbd = src0_op.reg_buf_data().format(
                     0, esize, 1, to_ngen(dpas_func.dst_type));
             if (dpas_func.is_dpasw) src0_rbd = src0_rbd.unpermute();
             src0 = src0_rbd;
@@ -440,11 +440,11 @@ private:
             src0 = host_->null.retype(to_ngen(dpas_func.dst_type));
         }
 
-        dst = dst.format2(0, esize, 1, to_ngen(dpas_func.dst_type));
-        src1 = src1.format2(0, esize, 1, to_ngen(dpas_func.src1_type));
+        dst = dst.format(0, esize, 1, to_ngen(dpas_func.dst_type));
+        src1 = src1.format(0, esize, 1, to_ngen(dpas_func.src1_type));
         int src2_width = (dpas_func.is_dp4a() ? 1 : esize);
         int src2_stride = (dpas_func.is_dp4a() ? 0 : 1);
-        src2 = src2.format2(
+        src2 = src2.format(
                 0, src2_width, src2_stride, to_ngen(dpas_func.src2_type));
 
         ngen::InstructionModifier mod = esize;
@@ -477,7 +477,7 @@ private:
         auto &src0_op = mad_t::arg_src0(args);
         if (!src0_op.is_immediate()) {
             src0 = src0_op.reg_buf_data()
-                           .format2(0, mad_func.exec_size, 1,
+                           .format(0, mad_func.exec_size, 1,
                                    to_ngen(mad_func.dst_type))
                            .reg_data();
         } else {
@@ -487,13 +487,13 @@ private:
             src0.setType(to_ngen(mad_func.dst_type));
         }
 
-        dst = dst.format2(0, mad_func.exec_size, 1, to_ngen(mad_func.dst_type));
+        dst = dst.format(0, mad_func.exec_size, 1, to_ngen(mad_func.dst_type));
 
         int src1_width = (mad_func.src1_stride == 0 ? 1 : mad_func.exec_size);
         int src2_width = (mad_func.src2_stride == 0 ? 1 : mad_func.exec_size);
-        src1 = src1.format2(0, src1_width, mad_func.src1_stride,
+        src1 = src1.format(0, src1_width, mad_func.src1_stride,
                 to_ngen(mad_func.src1_type));
-        src2 = src2.format2(0, src2_width, mad_func.src2_stride,
+        src2 = src2.format(0, src2_width, mad_func.src2_stride,
                 to_ngen(mad_func.src2_type));
 
         ngen::InstructionModifier mod = mad_func.exec_size;
@@ -541,7 +541,7 @@ private:
             step = utils::rnd_down_pow2(step);
             int exec_size = step / type.size();
             auto sub_rd_mov
-                    = rd.format2(i, exec_size, 1, to_ngen(type)).reg_data();
+                    = rd.format(i, exec_size, 1, to_ngen(type)).reg_data();
             if (pattern.is_invalid()) {
                 host_->emov(exec_size, sub_rd_mov, ngen::Immediate(0));
             } else if (pattern.is_immediate()) {
@@ -583,11 +583,11 @@ private:
         int dwords = ngen::GRF::bytes(hw) / sizeof(int32_t);
         int max_step = 2;
         for (int i = 0; i < regs;) {
-            auto sub_buf = buf.format2(i * grf_elems);
+            auto sub_buf = buf.format(i * grf_elems);
             int step = std::min(max_step, regs - i);
             if (step > 1 && !sub_buf.is_dense2(step * grf_size)) step = 1;
             int esize = step * dwords;
-            auto src = sub_buf.subregister2(ngen::DataType::ud)(1);
+            auto src = sub_buf.subregister(ngen::DataType::ud)(1);
             auto dst = tmp[i].ud(0)(1);
             host_->emov(esize, dst, src);
             i += step;
@@ -755,7 +755,7 @@ private:
             step = std::min(step, elems - i);
             step = utils::rnd_down_pow2(step);
             int cur_elems = step;
-            auto rd = data_rd.format2(i, ngen::DataType::f);
+            auto rd = data_rd.format(i, ngen::DataType::f);
             // Use temporary storage when needed to ensure:
             // - Eltwise is applied to full register
             // - Data is aligned to GRF boundary
@@ -1040,7 +1040,7 @@ public:
             stride = obj.stride / scalar_type.size();
         }
         int off = to_cpp<int>(off_op.immediate());
-        auto load_rbd = buf_op.reg_buf_data().format2(off / scalar_type.size(),
+        auto load_rbd = buf_op.reg_buf_data().format(off / scalar_type.size(),
                 type.elems(), stride, to_ngen(scalar_type));
         bind(obj, load_rbd);
     }
@@ -1056,7 +1056,7 @@ public:
         gpu_assert(base_op.is_reg_buf_data());
 
         int off = to_cpp<int>(obj.off);
-        bind(obj, base_op.reg_buf_data().format2(off, ngen::DataType::ub));
+        bind(obj, base_op.reg_buf_data().format(off, ngen::DataType::ub));
     }
 
     void _visit(const shuffle_t &obj) override {
@@ -1124,7 +1124,7 @@ public:
                 if (obj.type.is_bool()) {
                     gpu_assert(off % 8 == 0)
                             << "expected mask offset to be multiple of 8";
-                    auto chunk_op = op.reg_buf_data().subregister2(
+                    auto chunk_op = op.reg_buf_data().subregister(
                             off / 8, ngen::DataType::b)(1);
                     eval(obj.vec[idx], ngen_operand_t(dst_op, exec_size));
                     host_->emov(1, chunk_op, dst_op.flag_register().b(0));
@@ -1291,15 +1291,15 @@ private:
                 int off = src0.reg_data().getByteOffset();
                 int regs = utils::div_up(
                         esize * int(sizeof(float)) + off, grf_size);
-                auto temp = scope_.alloc_reg_buf_data(regs).format2(
+                auto temp = scope_.alloc_reg_buf_data(regs).format(
                         off, esize, 1, ngen::DataType::f);
                 host_->emul(mod, temp, dst, src1);
                 // Workaround for regioning restriction.
                 if (esize == 2) {
                     host_->csel(mod | host_->le, dst.reg_data(),
-                            temp.subregister2(0)(1),
-                            dst.reg_buf_data().subregister2(0)(1),
-                            dst.reg_buf_data().subregister2(0)(1));
+                            temp.subregister(0)(1),
+                            dst.reg_buf_data().subregister(0)(1),
+                            dst.reg_buf_data().subregister(0)(1));
                 } else {
                     host_->csel(mod | host_->le, dst.reg_data(), temp,
                             dst.reg_data(), dst.reg_data());
@@ -1521,13 +1521,13 @@ private:
             uint32_t packed = 0;
             for (int j = 0; j < esize; j++)
                 set_packed(packed, (vec[obj.idx[i + j]] - vec_min) / factor, j);
-            auto t = tmp.format2(i, esize, 1, w_type);
+            auto t = tmp.format(i, esize, 1, w_type);
             host_->emov(esize, t,
                     (use_uv) ? ngen::Immediate::uv(packed)
                              : ngen::Immediate::v(packed));
         }
-        auto d = dst_rbd.format2(0, obj.elems(), dst_stride);
-        auto t = tmp.format2(0, obj.elems(), 1, w_type);
+        auto d = dst_rbd.format(0, obj.elems(), dst_stride);
+        auto t = tmp.format(0, obj.elems(), 1, w_type);
         reg_buf_data_t t_strided;
         bool align_with_dst = false;
         if (align_with_dst) {
@@ -1535,7 +1535,7 @@ private:
             int tmp_strided_regs
                     = utils::div_up(obj.elems() * w_size * w_stride, grf_size);
             auto tmp_strided = scope_.alloc_reg_buf_data(tmp_strided_regs);
-            t_strided = tmp_strided.format2(0, obj.elems(), w_stride, w_type);
+            t_strided = tmp_strided.format(0, obj.elems(), w_stride, w_type);
             host_->emov(obj.elems(), t_strided, t);
         } else {
             t_strided = std::move(t);
