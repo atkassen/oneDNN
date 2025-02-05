@@ -502,6 +502,7 @@ public:
     bool is_f32() const { return kind() == type_kind_t::f32; }
     bool is_f64() const { return kind() == type_kind_t::f64; }
 
+    bool is_fp4() const { return is_f4_e2m1(); }
     bool is_fp8() const { return is_bf8() || is_hf8(); }
 
     bool is_int() const {

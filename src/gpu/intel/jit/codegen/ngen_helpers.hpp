@@ -28,6 +28,10 @@ namespace gpu {
 namespace intel {
 namespace jit {
 
+constexpr ngen::DataType ngen_f4_e2m1() {
+    return static_cast<ngen::DataType>(0x5A);
+}
+
 template <typename T>
 T to_cpp(const ngen::Immediate &imm) {
     auto u64 = uint64_t(imm);
@@ -55,6 +59,9 @@ inline ngen::DataType to_ngen(const type_t &type) {
 
 #define CASE(_kind, ngen_enum) \
     if (type.kind() == type_kind_t::_kind) return ngen::DataType::ngen_enum
+
+    // Until f4_e2m1 lands in ngen
+    if (type.kind() == type_kind_t::f4_e2m1) return ngen_f4_e2m1();
 
     CASE(bf16, bf);
     CASE(f16, hf);
