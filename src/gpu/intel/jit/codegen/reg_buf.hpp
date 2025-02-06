@@ -263,7 +263,7 @@ public:
         }
         int vstride = width * hstride;
 
-        int region = ((width - 1) * hstride + 1);
+        int region = (width - 1) * hstride + 1;
         gpu_assert(check_bounds(offset, region, type)) << "Invalid access.";
 
         auto ret = *this;
