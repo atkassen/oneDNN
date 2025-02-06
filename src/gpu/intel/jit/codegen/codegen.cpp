@@ -537,19 +537,18 @@ private:
         auto &rd = buf_op.reg_buf_data();
         type_t type = (pattern.is_invalid() ? type_t::f32() : type_t::u32());
         int grf_size = ngen::GRF::bytes(hw);
-        int step = 2 * grf_size;
-        for (int i = 0; i < size; i += step) {
-            step = std::min(step, size - i);
+        int step = 2 * grf_size / type.size();
+        int elems = size / type.size();
+        for (int i = 0; i < elems; i += step) {
+            step = std::min(step, elems - i);
             step = utils::rnd_down_pow2(step);
-            int exec_size = step / type.size();
-            auto sub_rd_mov
-                    = rd.format(i, exec_size, 1, to_ngen(type)).reg_data();
+            auto sub_rd_mov = rd.format(i, step, 1, to_ngen(type)).reg_data();
             if (pattern.is_invalid()) {
-                host_->emov(exec_size, sub_rd_mov, ngen::Immediate(0));
+                host_->emov(step, sub_rd_mov, ngen::Immediate(0));
             } else if (pattern.is_immediate()) {
-                host_->emov(exec_size, sub_rd_mov, pattern.immediate());
+                host_->emov(step, sub_rd_mov, pattern.immediate());
             } else if (pattern.is_reg_data()) {
-                host_->emov(exec_size, sub_rd_mov, pattern.reg_data());
+                host_->emov(step, sub_rd_mov, pattern.reg_data());
             } else {
                 gpu_error_not_expected();
             }

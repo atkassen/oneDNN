@@ -253,8 +253,6 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     const int grf_bits = grf_size << 3;
     int src_type_bits = ngen::getBits(src_type);
     int dst_type_bits = ngen::getBits(dst_type);
-    int src_stride_bytes = src_stride * src_type_bits / 8;
-    int dst_stride_bytes = dst_stride * dst_type_bits / 8;
     bool dst_b = ngen_is_b(dst_type);
     bool dst_d = ngen_is_dw(dst_type);
     bool dst_q = ngen_is_qw(dst_type);
@@ -397,8 +395,8 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     // - int -> hf must be DW-aligned & strided: use f temporary
     // - Use b -> w -> f -> hf
     if (src_b && dst_hf) {
-        gpu_assert(utils::one_of(dst_stride_bytes, 2, 4));
-        gpu_assert(utils::one_of(src_stride_bytes, 1, 4));
+        gpu_assert(utils::one_of(dst_stride, 1, 2));
+        gpu_assert(utils::one_of(src_stride, 1, 4));
         int step = get_step();
         const int align_boundary = grf_size / 2;
         const int step_size = step * (int)sizeof(uint32_t);
@@ -802,8 +800,8 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
 
     // hf -> b
     if (src_hf && dst_b) {
-        gpu_assert(utils::one_of(src_stride_bytes, 2, 4));
-        gpu_assert(utils::one_of(dst_stride_bytes, 1, 4));
+        gpu_assert(utils::one_of(src_stride, 1, 2));
+        gpu_assert(utils::one_of(dst_stride, 1, 4));
         int step = get_step();
         const int tmp_stride = 4;
         const int step_size = step * tmp_stride;
@@ -995,9 +993,9 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     bool d_or_f_to_b = (src_d || src_f) && dst_b;
     bool b_to_d_or_f = (dst_d || dst_f) && src_b;
     if (d_or_f_to_b || b_to_d_or_f) {
-        if (dst_d || dst_f) gpu_assert(dst_stride_bytes == 4);
-        if (src_d || src_f) gpu_assert(src_stride_bytes == 4);
-        if (dst_b) gpu_assert(utils::one_of(dst_stride_bytes, 1, 4, 8));
+        if (dst_d || dst_f) gpu_assert(dst_stride == 1);
+        if (src_d || src_f) gpu_assert(src_stride == 1);
+        if (dst_b) gpu_assert(utils::one_of(dst_stride, 1, 4, 8));
         int step = get_step();
         const int step_size = step * (int)sizeof(uint32_t);
         const int nregs = 1 + utils::div_up(step_size, grf_size);
@@ -1019,7 +1017,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
                     auto t = tmp1.subregister(dst_type);
                     plan(mov, 2 | host->sat, t(4), s);
                     plan(mov, 1, d, t);
-                } else if (dst_stride_bytes == 1) {
+                } else if (dst_stride == 1) {
                     auto offset_bytes = src_f ? s.getByteOffset()
                                               : 4 * (d.getByteOffset() % 16);
                     auto t = tmp1.subregister(offset_bytes, dst_type)(4);
@@ -1365,7 +1363,7 @@ public:
     reorder_2d_impl_t(ngen::HW hw, tensor_t tile, const layout_t &src_layout,
             const layout_t &dst_layout)
         : hw_(hw), tile_(std::move(tile)) {
-        gpu_assert(src_.type() == dst_.type());
+        gpu_assert(src_layout.type() == dst_layout.type());
 
         dim_idx_t a_idx, b_idx;
         int tile_a, tile_b;
@@ -1936,8 +1934,14 @@ private:
             scope.safeRelease(dummy);
 
             reorder_2d_impl_t r(hw_, tile, src_tile_layout, dst_tile_layout);
+            bool tile_ok = true;
             for (auto &step : r.path())
-                if (step.tile.elems() < 2) return false;
+                if (step.tile.elems() < 2) {
+                    tile_ok = false;
+                    break;
+                }
+            // Skip any 2d reorder that attempts scalar moves
+            if (!tile_ok) continue;
 
             src_layout_.for_each_tile(
                     tile, [&](const std::vector<dim_t> &start) {
