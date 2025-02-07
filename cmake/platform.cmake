@@ -349,14 +349,15 @@ elseif(UNIX OR MINGW)
                 # are addressed
                 if(DNNL_USE_CLANG_TIDY STREQUAL "CHECK")
                     set(CMAKE_CXX_CLANG_TIDY ${CLANG_TIDY}
-                        --header-filter='')
+                        --header-filter='' --checks=,-google-*)
                     message(STATUS "Using clang-tidy to run checks for source")
                 elseif(DNNL_USE_CLANG_TIDY STREQUAL "CHECK_ALL")
-                    set(CMAKE_CXX_CLANG_TIDY ${CLANG_TIDY})
+                    set(CMAKE_CXX_CLANG_TIDY ${CLANG_TIDY}
+                        --checks=,-google-*)
                     message(STATUS "Using clang-tidy to run checks for source and headers")
                 elseif(DNNL_USE_CLANG_TIDY STREQUAL "FIX")
                     set(CMAKE_CXX_CLANG_TIDY ${CLANG_TIDY}
-                        -fix)
+                        --checks=,-google-* -fix)
                     message(STATUS "Using clang-tidy to run checks and fix found issues")
                 endif()
             endif()
