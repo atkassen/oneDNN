@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020-2024 Intel Corporation
+* Copyright 2020-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -102,8 +102,8 @@ private:
                     alc->deallocate(p, get_device(), get_context(), {});
 #elif DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
                     const auto *ocl_engine = dnnl::impl::utils::downcast<
-                            const dnnl::impl::gpu::intel::ocl::ocl_gpu_engine_t
-                                    *>(eng_);
+                            const dnnl::impl::gpu::intel::ocl::engine_t *>(
+                            eng_);
                     auto dev = ocl_engine->device();
                     auto ctx = ocl_engine->context();
                     alc->deallocate(p, dev, ctx, {});
@@ -141,7 +141,7 @@ private:
                     deletor_wrapper {e});
 #elif DNNL_GPU_RUNTIME == DNNL_RUNTIME_OCL
             const auto *ocl_engine = dnnl::impl::utils::downcast<
-                    const dnnl::impl::gpu::intel::ocl::ocl_gpu_engine_t *>(e);
+                    const dnnl::impl::gpu::intel::ocl::engine_t *>(e);
             auto dev = ocl_engine->device();
             auto ctx = ocl_engine->context();
 
