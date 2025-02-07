@@ -145,18 +145,11 @@ struct type_info_t {
     IR_DECL_TYPE_ID(class_name) \
     static bool _is_stmt() { return true; };
 
-#define IR_DECL_MUTATE(mutator_template) \
-    object_t _mutate(mutator_template &mutator) const override { \
-        return mutator._mutate(*this); \
-    }
-#define IR_DECL_VISIT(visitor_template) \
-    void _visit(visitor_template &visitor) const override { \
-        visitor._visit(*this); \
-    }
-
 #define IR_DECLARE_TRAVERSERS() \
-    IR_DECL_MUTATE(ir_mutator_t) \
-    IR_DECL_VISIT(ir_visitor_t)
+    object_t _mutate(ir_mutator_t &mutator) const override { \
+        return mutator._mutate(*this); \
+    } \
+    void _visit(ir_visitor_t &visitor) const override { visitor._visit(*this); }
 
 // Defines getter for a function argument.
 #define IR_DEFINE_ARG_GET(name, index) \
@@ -620,7 +613,7 @@ class object_t;
 class ir_mutator_t;
 class ir_visitor_t;
 
-#define HANDLE_IR_OBJECT(type) class type;
+#define HANDLE_IR_OBJECT(type) class SILENCE_PAREN_WARNING(type);
 HANDLE_TRAVERSE_TARGETS()
 #undef HANDLE_IR_OBJECT
 
