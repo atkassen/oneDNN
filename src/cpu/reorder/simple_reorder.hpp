@@ -43,7 +43,7 @@ using bd = block_dim_t;
 using ib = inner_blk_t;
 
 template <impl::data_type_t type>
-using data_t = typename prec_traits<type>::type;
+using data_t = typename prec_traits_t<type>::type;
 
 template <impl::data_type_t type_i, impl::data_type_t type_o>
 using _qz_a1b0 = q10n::qz_a1b0<data_t<type_i>, data_t<type_o>>;
