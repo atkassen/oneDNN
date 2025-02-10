@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2023 Intel Corporation
+* Copyright 2023-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef GRAPH_UTILS_PM_DAG_GRAPH_CHECK_PASS_HPP
-#define GRAPH_UTILS_PM_DAG_GRAPH_CHECK_PASS_HPP
+#ifndef GRAPH_UTILS_PM_DAG_CHECK_PASS_HPP
+#define GRAPH_UTILS_PM_DAG_CHECK_PASS_HPP
 
 #include <memory>
 #include <string>
