@@ -41,6 +41,8 @@ jobs:
           fetch-depth: 0
       - name: Check commit messages
         run: python3 ./.github/automation/commit-msg-check.py "${{ github.event.pull_request.head.sha }}" "${{ github.event.pull_request.base.sha }}"
+      - name: Check header guards
+        run: git diff --name-only "${{ github.event.pull_request.head.sha }}..${{ github.event.pull_request.base.sha }}" | xargs python3 scripts/fix_header_guards.py
       - name: Install clang-format
         run: sudo apt update && sudo apt install -y "clang-format-11"
       - name: Check code formatting
