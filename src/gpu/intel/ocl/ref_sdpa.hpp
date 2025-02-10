@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2024 Intel Corporation
+* Copyright 2024-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef GPU_OCL_REF_SDPA_HPP
-#define GPU_OCL_REF_SDPA_HPP
+#ifndef GPU_INTEL_OCL_REF_SDPA_HPP
+#define GPU_INTEL_OCL_REF_SDPA_HPP
 
 #include <assert.h>
 
