@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2023-2024 Intel Corporation
+* Copyright 2023-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef GPU_GENERIC_SYCL_BATCH_NORMALIZATION_KERNELS_HPP
-#define GPU_GENERIC_SYCL_BATCH_NORMALIZATION_KERNELS_HPP
+#ifndef GPU_GENERIC_SYCL_BATCH_NORMALIZATIONS_KERNELS_HPP
+#define GPU_GENERIC_SYCL_BATCH_NORMALIZATIONS_KERNELS_HPP
 
 #include "common/dnnl_thread.hpp"
 #include "common/dnnl_traits.hpp"
