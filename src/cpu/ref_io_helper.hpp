@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2021-2024 Intel Corporation
+* Copyright 2021-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 * limitations under the License.
 *******************************************************************************/
 
-#ifndef REF_IO_HELPER_HPP
-#define REF_IO_HELPER_HPP
+#ifndef CPU_REF_IO_HELPER_HPP
+#define CPU_REF_IO_HELPER_HPP
 
 #include <cassert>
 
