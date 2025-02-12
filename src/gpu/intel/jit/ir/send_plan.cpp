@@ -1297,10 +1297,10 @@ public:
         // XXX: Prohibit type promotion with sub-dword slots as the resulting
         // GRF layout will be strided in the middle and may trigger unsupported
         // reorders. Once reorder is robust enough, this check is to be removed
-        //const int type_size = send_params.mem_type.size();
-        //const int elems_per_byte = send_params.mem_type.bitsize();
-        //if (type_size < slot_size * elems_per_byte && slot_size < 4)
-        //    slot_size = type_size;
+        const int type_size = send_params.mem_type.size();
+        const int elems_per_byte = send_params.mem_type.bitsize();
+        if (type_size < slot_size * elems_per_byte && slot_size < 4)
+            slot_size = type_size;
 
         // GPUs <= XeLP requires qword alignment for qword scattered messages,
         // downgrade to byte scattered (x1, x2 or x4) when alignment is

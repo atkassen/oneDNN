@@ -1288,7 +1288,7 @@ private:
             case op_kind_t::_prelu: {
                 int grf_size = ngen::GRF::bytes(hw);
                 int esize = mod.getExecSize();
-                int off = src0.reg_data().getByteOffset();
+                int off = src0.reg_data().getOffset();
                 int regs = utils::div_up(
                         esize * int(sizeof(float)) + off, grf_size);
                 auto temp = scope_.alloc_reg_buf_data(regs).format(
