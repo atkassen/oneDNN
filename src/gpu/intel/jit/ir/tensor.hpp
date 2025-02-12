@@ -379,7 +379,7 @@ public:
     dim_idx_t ndims() const { return ndims_; }
 
     dim_t elems() const {
-        dim_t ret = type().elems();
+        dim_t ret = 1;
         for (auto &b : blocks_)
             ret *= b.block;
         return ret;
