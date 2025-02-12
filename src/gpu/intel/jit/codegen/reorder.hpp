@@ -263,6 +263,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     bool dst_bf = (dst_type == ngen::DataType::bf);
     bool dst_df = (dst_type == ngen::DataType::df);
     bool dst_xf = dst_bf || dst_f || dst_hf || dst_df;
+    bool dst_f4_e2m1 = (dst_type == ngen_f4_e2m1());
     bool src_b = ngen_is_b(src_type);
     bool src_d = ngen_is_dw(src_type);
     bool src_q = ngen_is_qw(src_type);
@@ -310,13 +311,15 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
 
     using inst_mod_t = ngen::InstructionModifier;
     using reg_data_t = ngen::RegData;
-    auto bfn0xCA = [&](inst_mode_t mod, reg_data_t dst, reg_data_t src0,
-                           reg_data_t src1, imm_t src2) {
+    auto bfn0xCA = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src0,
+                           reg_data_t src1, ngen::Immediate src2) {
         if (hw >= ngen::HW::XeHPG)
             host->bfn(mod, 0xCA, dst, src0, src1, src2);
         else {
+            ngen::Immediate invs2((~(uint64_t)src2)
+                    & ((uint64_t(1) << ngen::getBits(src2.getType())) - 1));
             host->and_(mod, src1, src1, src2);
-            host->and_(mod, src0, src0, ~src2);
+            host->and_(mod, src0, src0, invs2);
             host->or_(mod, dst, src0, src1);
         }
     };
@@ -363,9 +366,9 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             host->shr(half_esize | host->ExecutionOffset(half_esize), d, s, 4);
         } else {
             if ((src.getOffset() & 1) == 0) {
-                host->and_(esize, dst, src, 0xF);
+                bfn0xCA(esize, dst, dst, src, 0x0F);
             } else {
-                host->shr(esize, dst, src, 4);
+                bfn0xCA(esize, dst, dst, src, 0xF0);
             }
         }
     };
@@ -386,7 +389,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     if (src_f4_e2m1 && dst_hf) {
         const int nregs = utils::div_up(2 * width, grf_size);
         auto tmp = lex_scope.alloc_reg_buf_data(nregs).format(
-                0, width, ngen::DataType::uw);
+                0, width, 1, ngen::DataType::uw);
         int step = get_step();
         for (int i = 0; i < width; i += step) {
             step = std::min(step, width - i);
@@ -401,7 +404,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             host->eshl(esize, t(1), t(1), 12);
             host->and_(esize, d(dst_stride), d(dst_stride), 0x0E00);
             host->mul(esize, dhf, dhf, ngen::Immediate::hf(0x7400));
-            bfn0xCA(d(dst_stride), d(dst_stride), t(1), 0x8000);
+            bfn0xCA(esize, d(dst_stride), d(dst_stride), t(1), 0x8000);
         }
         return;
     }
@@ -409,9 +412,9 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     if (src_hf && dst_f4_e2m1) {
         const int nregs = utils::div_up(2 * width, grf_size);
         auto tmp1 = lex_scope.alloc_reg_buf_data(nregs).format(
-                0, width, ngen::DataType::uw);
+                0, width, 1, ngen::DataType::uw);
         auto tmp2 = lex_scope.alloc_reg_buf_data(nregs).format(
-                0, width, ngen::DataType::uw);
+                0, width, 1, ngen::DataType::uw);
         int step = get_step();
         for (int i = 0; i < width; i += step) {
             step = std::min(step, width - i);
@@ -423,17 +426,18 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             auto t2 = tmp2.subregister(0, esize, 1, ngen::DataType::uw);
             host->and_(esize | host->nz | host->f0[0], host->null,
                     ~s(src_stride), ngen::Immediate::uw(0x7C00));
-            host->sel(esize | f0[0], t1(1), s(src_stride),
+            host->sel(esize | host->f0[0], t1(1), s(src_stride),
                     ngen::Immediate::uw(0x0));
-            host->sel(esize | lt | f0[0], t2.hf()(1), abs(t1.hf()(1)),
-                    ngen::Immediate::hf(0x4600));
+            host->sel(esize | host->lt | host->f0[0], t2.hf()(1),
+                    abs(t1.hf()(1)), ngen::Immediate::hf(0x4600));
             host->mul(esize, t2.hf()(1), t2.hf(1), ngen::Immediate::hf(0x0400));
-            host->and_(esize | nz | f0[0], host->null, t2(1),
+            host->and_(esize | host->nz | host->f0[0], host->null, t2(1),
                     ngen::Immediate::uw(0x0200));
-            host->add(esize | f0[0], t2(1), t2(1), ngen::Immediate::uw(0x0100));
-            host->shr(esize, t1(1), s(src_stride), 0x8);
-            host->shr(esize, t2(1), t2(1), 0x5);
-            bfn0xCA(esize, t2(1), t2(1), t1(1), 0x8000);
+            host->add(esize | host->f0[0], t2(1), t2(1),
+                    ngen::Immediate::uw(0x0100));
+            host->shr(esize, t1(1), s(src_stride), 12);
+            host->shr(esize, t2(1), t2(1), 9);
+            bfn0xCA(esize, t2(1), t2(1), t1(1), 0x8);
             plan(cvt_uw_to_u4, esize, d(dst_stride), t2(1));
         }
         return;
