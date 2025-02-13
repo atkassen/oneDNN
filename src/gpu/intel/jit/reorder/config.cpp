@@ -54,7 +54,7 @@ reorder_config_t::reorder_config_t(
     pvar_tile_t loop_tile;
     pvar_tile_t tg_tile;
 
-    pvar_tile_t padded_dims;
+    pvar_tile_t dims;
     dim_idx_t grid_idx = 0;
 
     for (dim_idx_t i = 0; i < ndims; ++i) {
@@ -64,7 +64,7 @@ reorder_config_t::reorder_config_t(
         dim_t outer = utils::div_up(dst.dim(i), tg_dim);
         iter_tile[d] = tg_dim;
         loop_tile[d] = 1;
-        padded_dims[d] = outer * tg_dim;
+        dims[d] = outer * tg_dim;
         grid_[grid_idx][d] = 1;
 
         if (outer != 1) grid_idx = std::min<dim_idx_t>(grid_idx + 1, 2);
@@ -81,6 +81,7 @@ reorder_config_t::reorder_config_t(
         }
     }
 
+    padded_dims().set(dims);
     iter_dims().set(iter_tile);
     loop_dims().set(loop_tile);
     thread_group_dims().set(tg_tile);
