@@ -28,8 +28,8 @@ namespace intel {
 namespace jit {
 namespace reorder {
 
-std::vector<tensor_t> tiles(const hw_t &hw, const layout_t &a,
-        const layout_t &b, dim_t max_elems = 256);
+std::vector<tensor_t> tiles(
+        const hw_t &hw, const layout_t &a, const layout_t &b);
 
 } // namespace reorder
 } // namespace jit
