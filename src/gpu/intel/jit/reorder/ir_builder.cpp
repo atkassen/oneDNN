@@ -134,8 +134,8 @@ bool reorder_ir_builder_t::try_build(
     };
     for (dim_idx_t i = 0; i < ndims; i++) {
         std::vector<expr_t> ordered;
-        auto &v = vars[i];
-        auto &d = reorder::pvars[i];
+        auto v = vars[i];
+        const auto &d = reorder::pvars[i];
         auto grid_idx = find_grid_idx(d);
         const auto &iter_dim = iter_tile[d];
         const auto &loop_dim = loop_tile[d];
@@ -165,7 +165,7 @@ bool reorder_ir_builder_t::try_build(
             ordered.insert(ordered.begin(), outer);
         }
         schedule.reorder(ordered);
-        fused_idxs[grid_idx].push_back(i);
+        fused_idxs[grid_idx].push_back(v);
     }
 
     for (dim_idx_t i = 0; i < into<dim_idx_t>(fused_idxs.size()); i++) {
