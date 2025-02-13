@@ -102,7 +102,7 @@ bool reorder_ir_builder_t::try_build(
 
     view_t src_view(vars, ndims);
     view_t dst_view(vars, ndims);
-    for (dim_idx_t i = 0; i < padded_dims.size(); ++i) {
+    for (dim_idx_t i = 0; i < ndims; ++i) {
         const auto &d = reorder::pvars[i];
         expr_t &var = vars[i];
         dim_t vdim = padded_dims[d];
