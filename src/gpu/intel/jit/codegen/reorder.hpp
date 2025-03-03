@@ -396,15 +396,49 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             step = utils::rnd_down_pow2(step);
             int esize = step;
             auto s = src.subregister(i, esize, src_stride);
-            auto d = dst.subregister(i, esize, dst_stride, ngen::DataType::uw);
+            auto d = dst.subregister(i, esize, dst_stride);
             auto t = tmp.subregister(0, esize, 1, ngen::DataType::uw);
-            auto dhf = d.hf()(dst_stride);
-            plan(cvt_u4_to_uw, esize, t(1), s(src_stride));
-            host->eshl(esize, d(dst_stride), t(1), 9);
-            host->eshl(esize, t(1), t(1), 12);
-            host->and_(esize, d(dst_stride), d(dst_stride), 0x0E00);
-            host->mul(esize, dhf, dhf, ngen::Immediate::hf(0x7400));
-            bfn0xCA(esize, d(dst_stride), d(dst_stride), t(1), 0x8000);
+            plan(cvt_u4_to_uw, esize, t, s);
+            host->eshl(esize, d.uw(), t, 9);
+            host->eshl(esize, t, t, 12);
+            host->and_(esize, d.uw(), d.uw(), 0x0E00);
+            host->mul(esize, d, d, ngen::Immediate::hf(0x7400));
+            bfn0xCA(esize, d.uw(), d.uw(), t(1), 0x8000);
+        }
+        return;
+    }
+
+    if (src_f4_e2m1 && (dst_f || dst_bf)) {
+        int step = get_step();
+        const int nregs = utils::div_up(4 * step, grf_size);
+        auto tmp0 = lex_scope.alloc_reg_buf_data(nregs).format(
+                0, width, 1, ngen::DataType::ud);
+        reg_buf_data_t tmp1;
+        if (dst_bf)
+            auto tmp1 = lex_scope.alloc_reg_buf_data(nregs).format(
+                    0, width, 1, ngen::DataType::f);
+        for (int i = 0; i < width; i += step) {
+            step = std::min(step, width - i);
+            step = utils::rnd_down_pow2(step);
+            int esize = step;
+            auto s = src.subregister(i, esize, src_stride);
+            auto d = dst.subregister(i, esize, dst_stride);
+            ngen::Subregister t1;
+            if (dst_bf) {
+                t1 = tmp1.subregister(0, esize, 1);
+                std::swap(t1, d);
+            }
+            auto t0 = tmp0.subregister(0, esize, 2, ngen::DataType::ud);
+            plan(cvt_u4_to_uw, esize, t0, s);
+            host->eshl(esize, d.ud(), t0, 22);
+            host->eshl(esize, t0, t0, 28);
+            host->and_(esize, d.ud(), d.ud(), 0x01C00000);
+            host->mul(esize, d, d, ngen::Immediate::f(0x7E800000));
+            bfn0xCA(esize, d.ud(), d.ud(), t0, 0x80000000);
+            if (dst_bf) {
+                std::swap(t1, d);
+                host->emov(esize, d.uw(), t1.uw(1)(2));
+            }
         }
         return;
     }
