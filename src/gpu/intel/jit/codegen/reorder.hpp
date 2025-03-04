@@ -409,6 +409,10 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     }
 
     if (src_f4_e2m1 && (dst_f || dst_bf)) {
+        // shift = 0x7e800000:f = 2^126, used to shift a (positive) f32-aligned
+        // f4_e2m1 (i.e. the mantissa bit is at the highest mantissa bit
+        // position of an f32) to the equivalent f32.
+        constexpr float shift = 85070591730234615865843651857942052864.f;
         int step = get_step();
         const int nregs = utils::div_up(4 * step, grf_size);
         auto tmp0 = lex_scope.alloc_reg_buf_data(nregs).format(
@@ -438,7 +442,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             host->and_(
                     esize, d.ud()(dst_stride), d.ud()(dst_stride), 0x01C00000);
             host->mul(esize, d(dst_stride), d(dst_stride),
-                    ngen::Immediate::f(0x7E800000u));
+                    ngen::Immediate::f(shift));
             bfn0xCA(esize, d.uw(1)(2 * dst_stride), d.uw(1)(2 * dst_stride),
                     t0.uw(1)(2), 0x8000);
             if (dst_bf) {
