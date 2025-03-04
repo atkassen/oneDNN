@@ -2097,7 +2097,11 @@ public:
     static inline Immediate uq(uint64_t imm) { Immediate i; i.set(imm); return i; }
     static inline Immediate  q(int64_t  imm) { Immediate i; i.set(imm); return i; }
     static inline Immediate  f(float    imm) { return Immediate(imm); }
+    static inline Immediate  f(uint32_t imm) { return Immediate(imm, DataType::f); }
+    static inline Immediate  f(int32_t  imm) { return Immediate(imm, DataType::f); }
     static inline Immediate df(double   imm) { return Immediate(imm); }
+    static inline Immediate df(uint64_t imm) { return Immediate(imm, DataType::df); }
+    static inline Immediate df(int64_t  imm) { return Immediate(imm, DataType::df); }
 
     static inline Immediate hf(uint16_t f) {
         uint32_t fimm = f;

@@ -85,7 +85,8 @@ status_t gen_reorder_t::pd_t::init(impl::engine_t *engine,
     VDISPATCH_REORDER(utils::one_of(dst_dt, f32, f16, bf16, f8_e5m2, f8_e4m3,
                               s32, s8, u8, f64),
             VERBOSE_UNSUPPORTED_DT);
-    VDISPATCH_REORDER(IMPLICATION(src_dt == f4_e2m1, dst_dt == f16),
+    VDISPATCH_REORDER(IMPLICATION(src_dt == f4_e2m1,
+                              utils::one_of(dst_dt, f32, f16, bf16)),
             VERBOSE_UNSUPPORTED_DT);
     VDISPATCH_REORDER(IMPLICATION(src_dt == f16 || dst_dt == f16,
                               device_info->has_native(f16)),
