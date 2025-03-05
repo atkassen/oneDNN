@@ -326,7 +326,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     auto shl16 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         host->eshl(mod, dst, src, 16);
     };
-    auto cvt_u4_to_uw = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
+    auto unpack_u4 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         auto dhs = dst.getHS();
         auto shs = src.getHS();
         auto esize = mod.getExecSize();
@@ -349,7 +349,8 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             }
         }
     };
-    auto cvt_uw_to_u4 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
+
+    auto pack_u4 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         auto dhs = dst.getHS();
         auto shs = src.getHS();
         auto esize = mod.getExecSize();
@@ -372,6 +373,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             }
         }
     };
+
     auto cvt_f32_to_bf16 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         auto exec_size = mod.getExecSize();
         host->add(mod, src, src, -0x8000);
@@ -398,12 +400,14 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             auto s = src.subregister(i, esize, src_stride);
             auto d = dst.subregister(i, esize, dst_stride);
             auto t = tmp.subregister(0, esize, 1, ngen::DataType::uw);
-            plan(cvt_u4_to_uw, esize, t, s);
-            host->eshl(esize, d.uw(), t, 9);
-            host->eshl(esize, t, t, 12);
-            host->and_(esize, d.uw(), d.uw(), 0x0E00);
-            host->mul(esize, d, d, ngen::Immediate::hf(0x7400));
-            bfn0xCA(esize, d.uw(), d.uw(), t(1), 0x8000);
+            plan(unpack_u4, esize, t(1), s(src_stride));
+            host->eshl(esize, d.uw()(dst_stride), t(1), 9);
+            host->eshl(esize, t(1), t(1), 12);
+            host->and_(esize, d.uw()(dst_stride), d.uw()(dst_stride), 0x0E00);
+            host->mul(esize, d(dst_stride), d(dst_stride),
+                    ngen::Immediate::hf(0x7400));
+            bfn0xCA(esize, d.uw()(dst_stride), d.uw()(dst_stride), t(1),
+                    0x8000);
         }
         return;
     }
@@ -434,17 +438,16 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
                 std::swap(t1, d);
                 std::swap(tmp_stride, dst_stride);
             }
-            auto t0 = tmp0.subregister(0, esize, 1, ngen::DataType::ud);
-            plan(cvt_u4_to_uw, esize, t0.uw()(2), s(src_stride));
-            host->emov(esize, t0(1), t0.uw()(2));
-            host->eshl(esize, d.ud()(dst_stride), t0(1), 22);
-            host->eshl(esize, t0(1), t0(1), 28);
+            auto t0 = tmp0.subregister(0, esize, 2, ngen::DataType::uw);
+            plan(unpack_u4, esize, t0(2), s(src_stride));
+            host->eshl(esize, d.ud()(dst_stride), t0(2), 22);
+            host->eshl(esize, t0(2), t0(2), 12);
             host->and_(
                     esize, d.ud()(dst_stride), d.ud()(dst_stride), 0x01C00000);
             host->mul(esize, d(dst_stride), d(dst_stride),
                     ngen::Immediate::f(shift));
             bfn0xCA(esize, d.uw(1)(2 * dst_stride), d.uw(1)(2 * dst_stride),
-                    t0.uw(1)(2), 0x8000);
+                    t0(2), 0x8000);
             if (dst_bf) {
                 std::swap(tmp_stride, dst_stride);
                 std::swap(t1, d);
@@ -483,7 +486,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             host->shr(esize, t1(1), s(src_stride), 12);
             host->shr(esize, t2(1), t2(1), 9);
             bfn0xCA(esize, t2(1), t2(1), t1(1), 0x8);
-            plan(cvt_uw_to_u4, esize, d(dst_stride), t2(1));
+            plan(pack_u4, esize, d(dst_stride), t2(1));
         }
         return;
     }
