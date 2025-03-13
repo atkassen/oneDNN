@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2023-2024 Intel Corporation
+* Copyright 2023-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -219,6 +219,11 @@ public:
             if (it_ == end_) return *this;
 
             auto size = (*it_).block;
+            // Preferentially increase by a factor of 2
+            if (size % (2 * factor_) == 0) {
+                factor_ *= 2;
+                return *this;
+            }
             while (++factor_ <= size) {
                 if (size % factor_ == 0) return *this;
             }
