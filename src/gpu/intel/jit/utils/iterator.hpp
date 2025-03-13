@@ -219,34 +219,41 @@ public:
             if (it_ == end_) return *this;
 
             auto size = (*it_).block;
+            auto rel_size = size / scale();
             // Preferentially increase by a factor of 2
-            if (size % (2 * factor_) == 0) {
-                factor_ *= 2;
+            if (log2scale_ < 8 * sizeof(dim_t) - 1 && rel_size % 2 == 0) {
+                ++log2scale_;
                 return *this;
             }
-            while (++factor_ <= size) {
-                if (size % factor_ == 0) return *this;
+            while (++factor_ <= rel_size) {
+                if (rel_size % factor_ == 0) return *this;
             }
 
             dims_[(*it_).dim_idx] *= size;
             ++it_;
+            log2scale_ = 0;
             factor_ = 1;
             return operator++();
         }
 
         tensor_t operator*() const {
             auto dims = dims_;
-            dims[(*it_).dim_idx] *= factor_;
+            auto factor = (dim_t(1) << log2scale_) * factor_;
+            dims[(*it_).dim_idx] *= factor;
             return tensor_t(dims);
         }
 
         iterator_t(const inner_iter_t &it, const inner_iter_t &end, int ndims)
-            : it_(it), end_(end), dims_(ndims, 1), factor_(1) {}
+            : it_(it), end_(end), dims_(ndims, 1) {}
 
     private:
+        dim_t scale() const { return dim_t(1) << log2scale_; }
+        dim_t factor() const { return scale() * factor_; }
+
         inner_iter_t it_, end_;
         std::vector<dim_t> dims_;
-        dim_t factor_;
+        size_t log2scale_ = 0;
+        dim_t factor_ = 1;
     };
 
     iterator_t begin() const { return {begin_, end_, ndims_}; }
