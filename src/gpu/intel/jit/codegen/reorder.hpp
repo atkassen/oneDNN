@@ -269,6 +269,9 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     bool dst_bf = (dst_type == ngen::DataType::bf);
     bool dst_df = (dst_type == ngen::DataType::df);
     bool dst_xf = dst_bf || dst_f || dst_hf || dst_df;
+    bool dst_f4_e2m1 = (dst_type == ngen_f4_e2m1());
+    bool dst_f4_e3m0 = (dst_type == ngen_f4_e3m0());
+    bool dst_f4 = dst_f4_e2m1 || dst_f4_e3m0;
     bool src_b = ngen_is_b(src_type);
     bool src_d = ngen_is_dw(src_type);
     bool src_q = ngen_is_qw(src_type);
@@ -321,13 +324,14 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
 
     using inst_mod_t = ngen::InstructionModifier;
     using reg_data_t = ngen::RegData;
+    using subregister_t = ngen::Subregister;
+
     auto bfn0xCA = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src0,
                            reg_data_t src1, ngen::Immediate src2) {
         if (hw >= ngen::HW::XeHPG)
             host->bfn(mod, 0xCA, dst, src0, src1, src2);
         else {
-            ngen::Immediate invs2((~(uint64_t)src2)
-                    & ((uint64_t(1) << ngen::getBits(src2.getType())) - 1));
+            ngen::Immediate invs2((~(uint64_t)src2) & 0xFFFF);
             host->and_(mod, src1, src1, src2);
             host->and_(mod, src0, src0, invs2);
             host->or_(mod, dst, src0, src1);
@@ -389,6 +393,34 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
         host->add(mod | host->f0, dst, dst, 1);
     };
 
+    auto pack_uw_to_u4 = [&](int esize, subregister_t dst, subregister_t src,
+                                 subregister_t tmp) {
+        // assumption: src and tmp are GRF-aligned
+        if (esize > 1 && dst_stride == 1) {
+            auto t0_ub = src.ub();
+            dst.setOffset(dst.getOffset() / 2);
+            dst.setType(ngen::DataType::ub);
+            host->shl(esize / 2, tmp(1), src.uw(1)(2), 4);
+            host->mov(esize / 2, src(1), src(2));
+            bfn0xCA(esize / 2, src(1), src(1), tmp(1), 0xF0);
+            host->mov(esize / 2, t0_ub(1), t0_ub(2));
+            host->mov(esize / 2, dst(1), t0_ub(1));
+        } else {
+            auto f4_offset = dst.getOffset();
+            auto ub_stride = dst_stride / 2;
+            auto ub_shift = f4_offset & 1;
+            dst.setOffset(f4_offset / 2);
+            dst.setType(ngen::DataType::ub);
+            host->mov(esize, tmp.ub()(ub_stride), dst(ub_stride));
+            host->mov(esize, tmp(1), tmp.ub()(ub_stride));
+            if (ub_shift) host->shl(esize, src(1), src(1), 4 * ub_shift);
+            auto mask = (uint16_t)(0xF << (4 * ub_shift));
+            bfn0xCA(esize, tmp(1), tmp(1), src(1), mask);
+            host->mov(esize, tmp.ub()(ub_stride), tmp(1));
+            host->mov(esize, dst(ub_stride), tmp.ub()(ub_stride));
+        }
+    };
+
     if (src_f4 && dst_hf) {
         const auto scale = src_f4_e2m1 ? 0x7400 : 0x6c00;
         const auto shift = src_f4_e2m1 ? 9 : 10;
@@ -412,6 +444,46 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
                     ngen::Immediate::hf(scale));
             bfn0xCA(esize, d.uw()(dst_stride), d.uw()(dst_stride), t(1),
                     0x8000);
+        }
+        return;
+    }
+
+    if (src_hf && dst_f4) {
+        const auto max_f4 = dst_f4_e2m1 ? 0x4600 : 0x4c00;
+        const auto scale = dst_f4_e2m1 ? 0x0400 : 0x0c00;
+        const auto shift = dst_f4_e2m1 ? 9 : 10;
+        const auto half_ulp = dst_f4_e2m1 ? 0x0100 : 0x0200;
+        const auto rtne_mask = (half_ulp << 2) - 1;
+        int step = get_step();
+        const int nregs = utils::div_up(4 * step, grf_size);
+        auto tmp0 = lex_scope.alloc_reg_buf_data(nregs).format(
+                0, width, 1, ngen::DataType::uw);
+        auto tmp1 = lex_scope.alloc_reg_buf_data(nregs).format(
+                0, width, 1, ngen::DataType::uw);
+        for (int i = 0; i < width; i += step) {
+            step = std::min(step, width - i);
+            step = utils::rnd_down_pow2(step);
+            int esize = step;
+            auto s = src.subregister(i, esize, src_stride);
+            auto d = dst.subregister(i, esize, dst_stride);
+            auto t0 = tmp0.subregister(0, esize, 1, ngen::DataType::uw);
+            auto t1 = tmp1.subregister(0, esize, 1, ngen::DataType::uw);
+            plan(mov, esize, t1(src_stride), s.uw()(src_stride));
+            if (src_stride != 1) plan(mov, esize, t1(1), t1(src_stride));
+
+            auto t0_hf = t0.hf();
+            // f4 down-convert sequence
+            host->min_(esize, t0_hf(1), abs(t1.hf()(1)),
+                    ngen::Immediate::hf(max_f4));
+            host->mul(esize, t0_hf(1), t0_hf(1), ngen::Immediate::hf(scale));
+            host->eadd(esize, t0(1), t0(1), -half_ulp);
+            host->and_(esize | host->nz | host->f0[0], host->null, t0(1),
+                    rtne_mask);
+            host->shr(esize, t0(1), t0(1), shift);
+            host->add(esize | host->f0[0], t0(1), t0(1), 1);
+            host->shr(esize, t1(1), t1(1), 12);
+            bfn0xCA(esize, t0(1), t0(1), t1(1), 0x8);
+            pack_uw_to_u4(esize, d, t0, t1);
         }
         return;
     }
@@ -459,6 +531,53 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
                 std::swap(t1, d);
                 host->emov(esize, d.uw()(dst_stride), t1.uw(1)(2));
             }
+        }
+        return;
+    }
+
+    if ((src_f || src_bf) && dst_f4) {
+        const auto max_f4 = dst_f4_e2m1 ? 0x40c00000 : 0x41800000;
+        const auto scale = dst_f4_e2m1 ? 0x00800000 : 0x01800000;
+        const auto shift = dst_f4_e2m1 ? 22 : 23;
+        const auto half_ulp = dst_f4_e2m1 ? 0x00200000 : 0x00400000;
+        const auto rtne_mask = (half_ulp << 2) - 1;
+        const auto max_f4_f = utils::bit_cast<float>(max_f4);
+        const float scale_f = utils::bit_cast<float>(scale);
+        int step = get_step();
+        const int nregs = utils::div_up(4 * step, grf_size);
+        auto tmp0 = lex_scope.alloc_reg_buf_data(nregs).format(
+                0, width, 1, ngen::DataType::ud);
+        auto tmp1 = lex_scope.alloc_reg_buf_data(nregs).format(
+                0, width, 1, ngen::DataType::ud);
+        for (int i = 0; i < width; i += step) {
+            step = std::min(step, width - i);
+            step = utils::rnd_down_pow2(step);
+            int esize = step;
+            auto s = src.subregister(i, esize, src_stride);
+            auto d = dst.subregister(i, esize, dst_stride);
+            auto t0 = tmp0.subregister(0, esize, 1, ngen::DataType::ud);
+            auto t1 = tmp1.subregister(0, esize, 1, ngen::DataType::ud);
+
+            if (src_bf)
+                plan(shl16, esize, t1(1), s.uw()(src_stride));
+            else
+                plan(mov, esize, t1(1), s.ud()(src_stride));
+
+            auto t0_f = t0.f();
+            auto t0_uw = t0.uw();
+            auto t1_uw = t1.uw();
+            // f4 down-convert sequence
+            host->min_(esize, t0_f(1), abs(t1.f()(1)), max_f4_f);
+            host->mul(esize, t0_f(1), t0_f(1), scale_f);
+            host->eadd(esize, t0(1), t0(1), -half_ulp);
+            host->and_(esize | host->nz | host->f0[0], host->null, t0(1),
+                    rtne_mask);
+            host->shr(esize, t0(1), t0(1), shift);
+            host->add(esize | host->f0[0], t0_uw(2), t0_uw(2), 1);
+            host->shr(esize, t1_uw(2), t1(1), 28);
+            bfn0xCA(esize, t0_uw(2), t0_uw(2), t1_uw(2), 0x8);
+            host->mov(esize, t0_uw(1), t0_uw(2));
+            pack_uw_to_u4(esize, d, t0_uw, t1.uw());
         }
         return;
     }
