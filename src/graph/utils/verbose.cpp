@@ -189,11 +189,25 @@ std::string init_info_partition(const engine_t *engine,
 
     const std::vector<std::shared_ptr<graph::op_t>> &operators
             = partition.get_ops();
-    const size_t num_operators = operators.size();
-    for (size_t i = 0; i < num_operators; ++i) {
-        ss << operators[i]->get_name()
-           << ((i == num_operators - 1) ? "," : ";");
+    std::string sep;
+    for (const auto &op : operators) {
+        ss << sep << graph::op_t::kind2str(op->get_kind());
+        auto name = op->get_name();
+        sep = ":";
+        const auto &inputs = op->get_input_values();
+        for (const auto &in : inputs) {
+            ss << sep << in->get_logical_tensor().id;
+            sep = "x";
+        }
+        sep = ":";
+        const auto &outputs = op->get_output_values();
+        for (const auto &out : outputs) {
+            ss << sep << out->get_logical_tensor().id;
+            sep = "x";
+        }
+        sep = ';';
     }
+    ss << ",";
 
     ss << partition2fmt_str(partition) << ",";
     {

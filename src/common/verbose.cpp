@@ -154,7 +154,7 @@ void print_header() noexcept {
 #ifdef ONEDNN_BUILD_GRAPH
         verbose_printf(
                 "graph,info,template:%soperation,engine,partition_id,"
-                "partition_kind,op_names,data_formats,logical_tensors,fpmath_"
+                "partition_kind,operations,data_formats,logical_tensors,fpmath_"
                 "mode,implementation,backend,exec_time\n",
                 get_verbose_timestamp() ? "timestamp," : "");
 #endif
