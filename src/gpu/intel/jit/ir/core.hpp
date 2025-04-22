@@ -210,6 +210,7 @@ enum class type_kind_t {
     // Floating point types.
     f4_e3m0,
     f4_e2m1,
+    f8_e8m0,
     bf8,
     f8_e5m2 = bf8,
     hf8,
@@ -242,6 +243,7 @@ static auto type_kind_names = nstl::to_array({
         make_enum_name(type_kind_t::s64, "s64"),
         make_enum_name(type_kind_t::f4_e3m0, "f4_e3m0"),
         make_enum_name(type_kind_t::f4_e2m1, "f4_e2m1"),
+        make_enum_name(type_kind_t::f8_e8m0, "f8_e8m0"),
         make_enum_name(type_kind_t::bf8, "bf8"),
         make_enum_name(type_kind_t::hf8, "hf8"),
         make_enum_name(type_kind_t::bf16, "bf16"),
@@ -307,6 +309,9 @@ public:
     }
     static type_t f4_e2m1(int elems = 1) {
         return type_t(type_kind_t::f4_e2m1, elems);
+    }
+    static type_t f8_e8m0(int elems = 1) {
+        return type_t(type_kind_t::f8_e8m0, elems);
     }
     static type_t bf8(int elems = 1) { return type_t(type_kind_t::bf8, elems); }
     static type_t hf8(int elems = 1) { return type_t(type_kind_t::hf8, elems); }
@@ -419,6 +424,7 @@ public:
     }
         CASE(f4_e3m0);
         CASE(f4_e2m1);
+        CASE(f8_e8m0);
         CASE(f8_e5m2);
         CASE(f8_e4m3);
         CASE(bf16);
@@ -447,10 +453,14 @@ public:
         if (dt == data_type::undef) return;
         elems_ = 1;
         switch ((int)dt) {
-#define CASE(x) \
-    case data_type::x: kind_ = type_kind_t::x; break;
+#define CASE2(x, y) \
+    case data_type::x: \
+        kind_ = type_kind_t::y; \
+        break;
+#define CASE(x) CASE2(x, x)
             CASE(f4_e3m0);
             CASE(f4_e2m1);
+            CASE2(e8m0, f8_e8m0);
             CASE(f8_e5m2);
             CASE(f8_e4m3);
             CASE(bf16);
@@ -509,6 +519,7 @@ public:
 
     bool is_f4_e3m0() const { return kind() == type_kind_t::f4_e3m0; }
     bool is_f4_e2m1() const { return kind() == type_kind_t::f4_e2m1; }
+    bool is_f8_e8m0() const { return kind() == type_kind_t::f8_e8m0; }
     bool is_bf8() const { return kind() == type_kind_t::bf8; }
     bool is_hf8() const { return kind() == type_kind_t::hf8; }
     bool is_bf16() const { return kind() == type_kind_t::bf16; }
@@ -518,7 +529,7 @@ public:
     bool is_f64() const { return kind() == type_kind_t::f64; }
 
     bool is_fp4() const { return is_f4_e3m0() || is_f4_e2m1(); }
-    bool is_fp8() const { return is_bf8() || is_hf8(); }
+    bool is_fp8() const { return is_bf8() || is_hf8() || is_f8_e8m0(); }
 
     bool is_int() const {
         return is_x4() || is_x8() || is_x16() || is_x32() || is_x64();

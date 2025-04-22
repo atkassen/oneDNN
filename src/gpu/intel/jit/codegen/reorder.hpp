@@ -292,6 +292,7 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     bool src_f4_e2m1 = (src_type == ngen_f4_e2m1());
     bool src_f4_e3m0 = (src_type == ngen_f4_e3m0());
     bool src_f4 = src_f4_e2m1 || src_f4_e3m0;
+    bool src_f8_e8m0 = src_type == ngen_f8_e8m0();
     bool f_to_xf = (src_f && (dst_bf || dst_hf));
     bool native_bf16 = host->exec_cfg().hw().systolic_support();
     op_plan_t plan = grf_size;
@@ -347,6 +348,9 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
     };
     auto shl16 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         host->eshl(mod, dst, src, 16);
+    };
+    auto shl23 = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
+        host->eshl(mod, dst, src, 23);
     };
     auto mov = [&](inst_mod_t mod, reg_data_t dst, reg_data_t src) {
         host->emov(mod, dst, src);
@@ -519,6 +523,19 @@ void emit_reorder_1d_tile(ngen::HW hw, GeneratorT *host,
             host->mov(esize, dst(ub_stride), tmp.ub()(ub_stride));
         }
     };
+
+    if (src_f8_e8m0 && dst_f) {
+        int step = get_step();
+        for (int i = 0; i < width; i += step) {
+            step = std::min(step, width - i);
+            step = utils::rnd_down_pow2(step);
+            int esize = step;
+            auto s = src.subregister(i, esize, src_stride);
+            auto d = dst.subregister(i, esize, dst_stride);
+            plan(shl23, esize, d.ud(dst_stride), s.ub(src_stride));
+        }
+        return;
+    }
 
     if (src_f4 && dst_hf) {
         int step = get_step();

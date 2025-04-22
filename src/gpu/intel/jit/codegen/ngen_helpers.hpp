@@ -36,6 +36,10 @@ constexpr ngen::DataType ngen_f4_e2m1() {
     return static_cast<ngen::DataType>(0x5A);
 }
 
+constexpr ngen::DataType ngen_f8_e8m0() {
+    return static_cast<ngen::DataType>(0x69);
+}
+
 template <typename T>
 T to_cpp(const ngen::Immediate &imm) {
     auto u64 = uint64_t(imm);

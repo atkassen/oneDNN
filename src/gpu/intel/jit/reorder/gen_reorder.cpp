@@ -58,12 +58,15 @@ status_t gen_reorder_t::pd_t::init(impl::engine_t *engine,
         return true;
     };
     auto scales_ok = [&]() {
-        const bool src_scale_ok
-                = attr()->scales_.has_default_values(DNNL_ARG_SRC)
-                || attr()->scales_.get_mask(DNNL_ARG_SRC) == 0;
-        const bool dst_scale_ok
-                = attr()->scales_.has_default_values(DNNL_ARG_DST)
-                || attr()->scales_.get_mask(DNNL_ARG_DST) == 0;
+        const auto &scales = attr()->scales_;
+        const bool src_scale_ok = scales.has_default_values(DNNL_ARG_SRC)
+                || (scales.get_mask(DNNL_ARG_SRC) == 0
+                        && utils::one_of(
+                                scales.get_data_type(DNNL_ARG_SRC), f32, e8m0));
+        const bool dst_scale_ok = scales.has_default_values(DNNL_ARG_DST)
+                || (scales.get_mask(DNNL_ARG_DST) == 0
+                        && utils::one_of(
+                                scales.get_data_type(DNNL_ARG_DST), f32, e8m0));
         return src_scale_ok && dst_scale_ok;
     };
     auto supports_bf16_conversion = [](data_type_t dt) {
