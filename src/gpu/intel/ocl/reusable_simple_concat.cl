@@ -118,6 +118,7 @@ reusable_simple_concat(__global DATA_T *dst, const ulong dst_offset0,
     __global const DATA_T *src;
     idx_t src_ext_offset, input_offset;
     idx_t input_padded_offset, concat_axis_size;
+    x;
 
 #define CHECK_AND_GET(n) \
     if (get_global_id(2) >= padded_offset##n) { \
