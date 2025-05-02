@@ -14,6 +14,7 @@
 * limitations under the License.
 *******************************************************************************/
 
+#include <locale>
 #include <string>
 #include <utility>
 #include <vector>
@@ -81,6 +82,7 @@ execution_mode_t execution_mode {execution_mode_t::direct};
 
 int main(int argc, char **argv) {
     using namespace parser;
+    std::locale::global(std::locale("en_US.utf8"));
 
     if (argc < 2) {
         fprintf(stderr, "err: no arguments passed\n");
