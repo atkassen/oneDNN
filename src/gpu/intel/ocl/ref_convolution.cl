@@ -65,51 +65,53 @@ __kernel void ref_convolution_fwd(
     const off_t ow = GWS_GET_OW();
 
     ACC_DATA_T d = 0;
-    for (off_t ic = 0; ic < IC; ++ic)
-        for (off_t kd = 0; kd < KD; ++kd)
-            for (off_t kh = 0; kh < KH; ++kh)
-                for (off_t kw = 0; kw < KW; ++kw) {
-                    const off_t id = od * SD - PD + kd * (1 + DD);
-                    const off_t ih = oh * SH - PH + kh * (1 + DH);
-                    const off_t iw = ow * SW - PW + kw * (1 + DW);
+    const off_t id0 = od * SD - PD;
+    const off_t ih0 = oh * SH - PH;
+    const off_t iw0 = ow * SW - PW;
 
-                    if (id < 0 || id >= ID || ih < 0 || ih >= IH || iw < 0
-                            || iw >= IW)
-                        continue;
+#if WITH_SRC_ZPOINTS
+#if !WITH_SRC_ZPOINTS_PER_IC
+    const int src_zp = src_zpoints[0];
+#define ZP_INCREMENT
+#else
+    __global int *src_zp_ptr = src_zpoints + g * IC;
+    int src_zp = *src_zp_ptr;
+#define ZP_INCREMENT , src_zp = *(++src_zp_ptr)
+#endif
+#endif
 
-                    const off_t src_off = SRC_OFF(n, g * IC + ic, id, ih, iw);
-                    const off_t wei_off = WEI_OFF(g, oc, ic, kd, kh, kw);
+#if WITH_WEI_ZPOINTS
+    const int wei_zp = wei_zpoints[0];
+#endif
+
+    for_(off_t ic = 0; ic < IC; ++ic ZP_INCREMENT)
+    for_(off_t kd = 0, id = id0; kd < KD; ++kd, id += (DD + 1))
+    for_(off_t kh = 0, ih = ih0; kh < KH; ++kh, ih += (DH + 1))
+    for (off_t kw = 0, iw = iw0; kw < KW; ++kw, iw += (DW + 1)) {
+        if (id < 0 || ih < 0 || iw < 0) continue;
+        if (id >= ID || ih >= IH || iw >= IW) continue;
+
+        const off_t src_off = SRC_OFF(n, g * IC + ic, id, ih, iw);
+        const off_t wei_off = WEI_OFF(g, oc, ic, kd, kh, kw);
 
 #if SRC_DT_F4_E2M1 || SRC_DT_F4_E3M0
-                    ACC_DATA_T s
-                            = TO_ACC(SRC_TO_REF(GET_HALF_BYTE(src, src_off)));
+        ACC_DATA_T s = TO_ACC(SRC_TO_REF(GET_HALF_BYTE(src, src_off)));
 #else
-                    ACC_DATA_T s = TO_ACC(SRC_TO_REF(src[src_off]));
+        ACC_DATA_T s = TO_ACC(SRC_TO_REF(src[src_off]));
 #endif
 #if WEI_DT_F4_E2M1 || WEI_DT_F4_E3M0
-                    ACC_DATA_T w
-                            = TO_ACC(WEI_TO_REF(GET_HALF_BYTE(wei, wei_off)));
+        ACC_DATA_T w = TO_ACC(WEI_TO_REF(GET_HALF_BYTE(wei, wei_off)));
 #else
-                    ACC_DATA_T w = TO_ACC(WEI_TO_REF(wei[wei_off]));
-#endif
-                    d += s * w;
-
-#if WITH_SRC_ZPOINTS
-                    const int src_zp
-                            = src_zpoints[WITH_SRC_ZPOINTS_PER_IC ? g * IC + ic
-                                                                  : 0];
-                    d -= src_zp * w;
-#endif
-#if WITH_WEI_ZPOINTS
-                    const int wei_zp = wei_zpoints[0];
-                    d -= wei_zp * s;
+        ACC_DATA_T w = TO_ACC(WEI_TO_REF(wei[wei_off]));
 #endif
 #if WITH_SRC_ZPOINTS
+        s -= src_zp;
+#endif
 #if WITH_WEI_ZPOINTS
-                    d += src_zp * wei_zp;
+        w -= wei_zp;
 #endif
-#endif
-                }
+        d += s * w;
+    }
     POST_OP_DATA_T tmp = d;
 
 #if WITH_SRC_SCALES
@@ -305,49 +307,41 @@ __kernel void ref_convolution_bwd_weights(const __global SRC_DATA_T *src,
 #if WITH_BIAS
     if (ic == 0 && kh == 0 && kw == 0 & kd == 0) {
         ACC_DATA_T d = 0.0f;
-        for (off_t n = 0; n < MB; ++n)
-            for (off_t od = 0; od < OD; ++od)
-                for (off_t oh = 0; oh < OH; ++oh)
-                    for (off_t ow = 0; ow < OW; ++ow) {
-                        d += DST_TO_REF(
-                                diff_dst[DST_OFF(n, g * OC + oc, od, oh, ow)]);
-                    }
+        for_(off_t n = 0; n < MB; ++n)
+        for_(off_t od = 0; od < OD; ++od)
+        for_(off_t oh = 0; oh < OH; ++oh)
+        for (off_t ow = 0; ow < OW; ++ow) {
+            d += DST_TO_REF(diff_dst[DST_OFF(n, g * OC + oc, od, oh, ow)]);
+        }
         diff_bias[g * OC + oc] = TO_BIA(d);
     }
 #endif
 
     ACC_DATA_T dw = 0.0f;
-    for (off_t n = 0; n < MB; ++n)
-        for (off_t od = 0; od < OD; ++od)
-            for (off_t oh = 0; oh < OH; ++oh)
-                for (off_t ow = 0; ow < OW; ++ow) {
-                    if (ow * SW + kw * (1 + DW) < PW
-                            || oh * SH + kh * (1 + DH) < PH
-                            || od * SD + kd * (1 + DD) < PD
-                            || ow * SW + kw * (1 + DW) >= IW + PW
-                            || oh * SH + kh * (1 + DH) >= IH + PH
-                            || od * SD + kd * (1 + DD) >= ID + PD)
-                        continue;
-
-                    off_t id = od * SD - PD + kd * (1 + DD);
-                    off_t ih = oh * SH - PH + kh * (1 + DH);
-                    off_t iw = ow * SW - PW + kw * (1 + DW);
-                    off_t dst_off = DST_OFF(n, g * OC + oc, od, oh, ow);
-                    off_t src_off = SRC_OFF(n, g * IC + ic, id, ih, iw);
+    const off_t id0 = od * SD - PD;
+    const off_t ih0 = oh * SH - PH;
+    const off_t iw0 = ow * SW - PW;
+    for_(off_t n = 0; n < MB; ++n)
+    for_(off_t od = 0, id = id0; od < OD; ++od, id += (DD + 1))
+    for_(off_t oh = 0, ih = ih0; oh < OH; ++oh, ih += (DH + 1))
+    for (off_t ow = 0, iw = iw0; ow < OW; ++ow, iw += (DW + 1)) {
+        if (id < 0 || ih < 0 || iw < 0) continue;
+        if (id >= ID || ih >= IH || iw >= IW) continue;
+        off_t dst_off = DST_OFF(n, g * OC + oc, od, oh, ow);
+        off_t src_off = SRC_OFF(n, g * IC + ic, id, ih, iw);
 
 #if DST_DT_F4_E2M1 || DST_DT_F4_E3M0
-                    ACC_DATA_T diff_d
-                            = SRC_TO_REF(GET_HALF_BYTE(diff_dst, dst_off));
+        ACC_DATA_T diff_d = SRC_TO_REF(GET_HALF_BYTE(diff_dst, dst_off));
 #else
-                    ACC_DATA_T diff_d = DST_TO_REF(diff_dst[dst_off]);
+        ACC_DATA_T diff_d = DST_TO_REF(diff_dst[dst_off]);
 #endif
 #if SRC_DT_F4_E2M1 || SRC_DT_F4_E3M0
-                    ACC_DATA_T s = SRC_TO_REF(GET_HALF_BYTE(src, src_off));
+        ACC_DATA_T s = SRC_TO_REF(GET_HALF_BYTE(src, src_off));
 #else
-                    ACC_DATA_T s = SRC_TO_REF(src[src_off]);
+        ACC_DATA_T s = SRC_TO_REF(src[src_off]);
 #endif
-                    dw += diff_d * s;
-                }
+        dw += diff_d * s;
+    }
     diff_wei[WEI_OFF(g, oc, ic, kd, kh, kw)] = TO_WEI(dw);
 }
 #endif
