@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2023-2024 Intel Corporation
+* Copyright 2023-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -454,7 +454,9 @@ stmt_t pooling_ir_builder_t::try_build(pooling_ir_builder_t &pb,
         stmt = stmt.append(read.stmt());
     } else {
         ir_assert(acc_size % simd == 0);
-        allocs.push_back(alloc_t::make(acc_buf, acc_size, alloc_kind_t::grf));
+        auto acc_buf_size = std::max(into<int>(acc_size), write.reg_buf_size());
+        allocs.push_back(
+                alloc_t::make(acc_buf, acc_buf_size, alloc_kind_t::grf));
 
         stmt_t fill_stmt, compute_stmt = read.stmt();
         stmt = stmt_t();
