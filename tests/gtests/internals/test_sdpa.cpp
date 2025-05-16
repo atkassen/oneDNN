@@ -255,6 +255,7 @@ memory double_and_resize(const memory::desc &desc, dnnl::engine &eng) {
 
     void *handle;
     CHECK(dnnl_memory_get_data_handle(mem2, &handle));
+    CHECK(dnnl_memory_destroy(mem2));
     return memory(desc, eng, handle);
 }
 
