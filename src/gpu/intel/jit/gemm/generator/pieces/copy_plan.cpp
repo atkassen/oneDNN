@@ -778,7 +778,7 @@ void CopyPlan::planTypeConversions()
         } else if (st == Type::ngen_f8_e8m0() && dt == DataType::hf) {
                 planEmulatedFP8E8M0ToHF(i);
         } else if (st != dt && (isFP8(st) || isFP8(dt))) {
-            copyThrough(i, DataType::hf, 1);
+            copyThrough(i, DataType::hf);
             rerun = true;
         } else if (st == dt)
             i.moveToIntegerPipe();
@@ -1395,7 +1395,7 @@ void CopyPlan::planEmulatedHF8ToHF(CopyInstruction &i)
 
     bool tempY = (y.stride > 1 && multiGRF(hw, i, y));
     if (tempY)  /* Replace y by temporary if nonunit stride hurts performance */
-        y = newTemp(DataType::uw, i.simd, 1);
+        y = newTemp(DataType::hf, i.simd, 1);
 
     auto yUW = y;
     yUW.type = DataType::uw;
