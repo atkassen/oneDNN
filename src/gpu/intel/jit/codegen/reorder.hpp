@@ -2104,25 +2104,25 @@ private:
         int tile_elems = int(tile.elems());
         auto grf_bits = ngen::GRF::bytes(hw_) << 3;
         auto ngen_sdt = to_ngen(src_layout_.type());
-        auto ngen_ddt = to_ngen(src_layout_.type());
+        auto ngen_ddt = to_ngen(dst_layout_.type());
         auto larger_bits_per_elem
                 = std::max(src_stride * ngen::getBits(ngen_sdt),
                         dst_stride * ngen::getBits(ngen_ddt));
         auto width = grf_bits / larger_bits_per_elem;
 
-        gemmstone::CopyPlan plan(hw_, host->exec_cfg().hw().systolic_support());
-
-        gemmstone::CopyPlan::GRFAllocator grf_allocator
+        using gemmstone::CopyPlan;
+        CopyPlan plan(hw_, host->exec_cfg().hw().systolic_support());
+        CopyPlan::GRFAllocator grf_allocator
                 = [&](int count, ngen::GRFRange &range) {
                       if (count > 0)
                           range = scope.try_alloc_range(count);
                       else
                           scope.safeRelease(range);
                   };
-        gemmstone::CopyPlan::FlagAllocator flag_allocator
+        CopyPlan::FlagAllocator flag_allocator
                 = [&](int bytes, ngen::FlagRegister &flag) {
                       if (bytes > 0)
-                          flag = scope.try_alloc_flag(bytes >> 1);
+                          flag = scope.try_alloc_flag(bytes * 8);
                       else
                           scope.safeRelease(flag);
                   };
@@ -2135,13 +2135,16 @@ private:
 
             for (int i = 0; i < tile_elems; i += width) {
                 width = utils::rnd_down_pow2(std::min(width, tile_elems - i));
-                auto src_sub = src.subregister(i, width, src_stride);
-                auto dst_sub = src.subregister(i, width, src_stride);
+                auto src_sub
+                        = src.subregister(i, width, src_stride)(src_stride);
+                auto dst_sub
+                        = dst.subregister(i, width, dst_stride)(dst_stride);
                 plan.append(ngen::Opcode::mov, width, dst_sub, src_sub);
             }
         });
+        plan.transform();
         plan.materializeTemps(grf_allocator, flag_allocator);
-        plan.execute(host);
+        plan.execute(*host);
     }
 
     static std::vector<tensor_t> find_2d_dense_tiles(
