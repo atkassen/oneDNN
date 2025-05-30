@@ -186,6 +186,7 @@ protected:
     void split2DRegions();
     void planTypeConversions();
     void planEarlyInt4Upconversions();
+    void planSIMD1Swizzle();
     void planEmulatedHalveFloat(CopyInstruction &i);
     void planSmallUWToHF(CopyInstruction &i);
     void planBToI4(CopyInstruction &i);

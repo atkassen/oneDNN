@@ -215,6 +215,7 @@ void CopyPlan::transform()
     distributePhases();
     planEarlyInt4Upconversions();
     split2DRegions();
+    planSIMD1Swizzle();
 
     sort(SortType::Register);
 
@@ -1268,6 +1269,26 @@ void CopyPlan::planInt4Upconversion(CopyInstruction &i)
 }
 
 
+// Split scalar convert + swizzle into separate steps to help instruction fusion
+void CopyPlan::planSIMD1Swizzle() {
+    for (auto &i: insns) {
+        auto st = i.src0.type, dt = i.dst.type;
+        if (i.simd != 1 || i.op != Opcode::mov) continue;
+        if (i.dst.type == i.src0.type) continue;
+        if (is4Bit(i.dst.type) || is4Bit(i.src0.type)) continue;
+        if (i.dst.offset == i.src0.offset) continue;
+        auto &i1 = split(i);
+        auto stride = std::max(getBytes(st) * i.src0.stride, getBytes(dt) * i.dst.stride) / getBytes(dt);
+        i.dst = newTemp(dt, 1, stride, 0, i.src0.offset * stride);
+        i1.src0 = i.dst;
+        i1.src0.type = i1.dst.type;
+        i1.moveToIntegerPipe();
+    }
+
+    mergeChanges();
+}
+
+
 // Emulation sequence for fp8 e8m0->hf conversion.
 void CopyPlan::planEmulatedFP8E8M0ToHF(CopyInstruction &i) {
     if (i.src0.neg || i.sat || i.hasCMod()) stub("Unsupported modifier");
@@ -2160,7 +2181,8 @@ void CopyPlan::legalizeRegions()
             if (!isW(dt)  && !isB(dt))  stub();
             if (!isW(s0t) && !isB(s0t)) stub();
 
-            if (isW(s0t)) {
+            if (i.simd == 1) {}
+            else if (isW(s0t)) {
                 strideOK &= (s0s <= 2);
                 if (s0s == 2) {
                     if (isW(dt)) {
