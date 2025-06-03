@@ -215,7 +215,6 @@ void CopyPlan::transform()
     distributePhases();
     planEarlyInt4Upconversions();
     split2DRegions();
-    planSIMD1Swizzle();
 
     sort(SortType::Register);
 
@@ -1266,24 +1265,6 @@ void CopyPlan::planInt4Upconversion(CopyInstruction &i)
             i.src1 = 4;
         }
     }
-}
-
-
-// Split scalar convert + swizzle into separate steps to help instruction fusion
-void CopyPlan::planSIMD1Swizzle() {
-    for (auto &i: insns) {
-        auto st = i.src0.type, dt = i.dst.type;
-        if (i.simd != 1 || i.op != Opcode::mov) continue;
-        if (i.dst.type == i.src0.type) continue;
-        if (is4Bit(i.dst.type) || is4Bit(i.src0.type)) continue;
-        auto &i1 = split(i);
-        i.dst = newTemp(dt, 1, stride, 0, i.src0.offset);
-        i1.src0 = i.dst;
-        i1.src0.type = i1.dst.type;
-        i1.moveToIntegerPipe();
-    }
-
-    mergeChanges();
 }
 
 

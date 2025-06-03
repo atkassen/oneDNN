@@ -2093,6 +2093,11 @@ public:
     }
 
 private:
+    struct copy_plan_t : gemmstone::CopyPlan {
+        using gemmstone::CopyPlan::CopyPlan;
+        using gemmstone::CopyPlan::newTemp;
+    };
+
     template <typename GeneratorT>
     void emit_1d(GeneratorT *host, ngen_register_scope_t &scope,
             const reg_buf_data_t &src_rd, const reg_buf_data_t &dst_rd) {
@@ -2102,24 +2107,19 @@ private:
                 src_layout_, dst_layout_, src_stride, dst_stride);
 
         int tile_elems = int(tile.elems());
-        auto grf_bits = ngen::GRF::bytes(hw_) << 3;
         auto ngen_sdt = to_ngen(src_layout_.type());
         auto ngen_ddt = to_ngen(dst_layout_.type());
-        auto larger_bits_per_elem
-                = std::max(src_stride * ngen::getBits(ngen_sdt),
-                        dst_stride * ngen::getBits(ngen_ddt));
-        auto width = grf_bits / larger_bits_per_elem;
 
-        using gemmstone::CopyPlan;
-        CopyPlan plan(hw_, host->exec_cfg().hw().systolic_support());
-        CopyPlan::GRFAllocator grf_allocator
+        using gemmstone::CopyOperand;
+        copy_plan_t plan(hw_, host->exec_cfg().hw().systolic_support());
+        copy_plan_t::GRFAllocator grf_allocator
                 = [&](int count, ngen::GRFRange &range) {
                       if (count > 0)
                           range = scope.try_alloc_range(count);
                       else
                           scope.safeRelease(range);
                   };
-        CopyPlan::FlagAllocator flag_allocator
+        copy_plan_t::FlagAllocator flag_allocator
                 = [&](int bytes, ngen::FlagRegister &flag) {
                       if (bytes > 0)
                           flag = scope.try_alloc_flag(bytes * 8);
@@ -2127,21 +2127,42 @@ private:
                           scope.safeRelease(flag);
                   };
 
+        auto src0 = src_rd.format(0, ngen_sdt);
+        auto dst0 = dst_rd.format(0, ngen_ddt);
+        auto has_conversion = ngen_sdt != ngen_ddt;
+        auto swizzle_first = ngen::getBits(ngen_sdt) <= ngen::getBits(ngen_ddt);
+        CopyOperand tmp;
+
+        if (has_conversion && !swizzle_first) {
+            tmp = plan.newTemp(ngen_ddt, tile_elems, 1);
+            CopyOperand src_op = src0.subregister(0, tile_elems, src_stride);
+            src_op.stride = (int8_t)src_stride;
+            plan.append(ngen::Opcode::mov, tile_elems, tmp, src_op);
+        }
+
         dst_layout_.for_each_tile(tile, [&](const std::vector<dim_t> &start) {
             int src_off = src_layout_(start);
             int dst_off = dst_layout_(start);
             auto src = src_rd.format(src_off, ngen_sdt);
             auto dst = dst_rd.format(dst_off, ngen_ddt);
-
-            for (int i = 0; i < tile_elems; i += width) {
-                width = utils::rnd_down_pow2(std::min(width, tile_elems - i));
-                auto src_sub
-                        = src.subregister(i, width, src_stride)(src_stride);
-                auto dst_sub
-                        = dst.subregister(i, width, dst_stride)(dst_stride);
-                plan.append(ngen::Opcode::mov, width, dst_sub, src_sub);
+            CopyOperand src_op = src.subregister(0, tile_elems, src_stride);
+            CopyOperand dst_op = dst.subregister(0, tile_elems, dst_stride);
+            src_op.stride = (int8_t)src_stride;
+            dst_op.stride = (int8_t)dst_stride;
+            if (has_conversion) {
+                CopyOperand &tmp_target = swizzle_first ? dst_op : src_op;
+                tmp_target = tmp;
             }
+            plan.append(ngen::Opcode::mov, tile_elems, src_op, dst_op);
         });
+
+        if (has_conversion && swizzle_first) {
+            tmp = plan.newTemp(ngen_sdt, tile_elems, 1);
+            CopyOperand dst_op = dst0.subregister(0, tile_elems, dst_stride);
+            dst_op.stride = (int8_t)src_stride;
+            plan.append(ngen::Opcode::mov, tile_elems, dst_op, tmp);
+        }
+
         plan.transform();
         plan.materializeTemps(grf_allocator, flag_allocator);
         plan.execute(*host);
