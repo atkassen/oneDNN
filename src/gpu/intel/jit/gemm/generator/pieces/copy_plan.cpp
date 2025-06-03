@@ -1276,10 +1276,8 @@ void CopyPlan::planSIMD1Swizzle() {
         if (i.simd != 1 || i.op != Opcode::mov) continue;
         if (i.dst.type == i.src0.type) continue;
         if (is4Bit(i.dst.type) || is4Bit(i.src0.type)) continue;
-        if (i.dst.offset == i.src0.offset) continue;
         auto &i1 = split(i);
-        auto stride = std::max(getBytes(st) * i.src0.stride, getBytes(dt) * i.dst.stride) / getBytes(dt);
-        i.dst = newTemp(dt, 1, stride, 0, i.src0.offset * stride);
+        i.dst = newTemp(dt, 1, stride, 0, i.src0.offset);
         i1.src0 = i.dst;
         i1.src0.type = i1.dst.type;
         i1.moveToIntegerPipe();
