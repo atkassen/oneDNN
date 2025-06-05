@@ -2076,13 +2076,6 @@ public:
         , src_layout_(reorder.src_layout)
         , dst_layout_(reorder.dst_layout) {
         layout_t::try_reinterpret_to_wider_type(src_layout_, dst_layout_);
-
-        // Pure bf moves are not supported.
-        if (utils::everyone_is(
-                    type_t::bf16(), src_layout_.type(), dst_layout_.type())) {
-            src_layout_ = src_layout_.retype(type_t::u16());
-            dst_layout_ = dst_layout_.retype(type_t::u16());
-        }
     }
 
     template <typename GeneratorT>
@@ -2098,6 +2091,31 @@ private:
         using gemmstone::CopyPlan::newTemp;
     };
 
+    ngen::DataType intermediate_data_type(ngen::DataType s, ngen::DataType d) {
+        // Force up-/down-convert of small types
+        if (utils::one_of(s, ngen_f4_e2m1(), ngen_f4_e3m0())
+                || utils::one_of(d, ngen_f4_e2m1(), ngen_f4_e3m0()))
+            return ngen::DataType::hf;
+        if (utils::one_of(ngen::DataType::u4, s, d)) return ngen::DataType::ub;
+        if (utils::one_of(ngen::DataType::s4, s, d)) return ngen::DataType::b;
+
+        // Swizzle only
+        if (s == d) return d;
+
+        // Convert via larger fp type
+        if (utils::one_of(s, ngen::DataType::bf, ngen::DataType::hf)
+                && utils::one_of(d, ngen::DataType::bf, ngen::DataType::hf))
+            return ngen::DataType::f;
+        if (utils::one_of(s, ngen::DataType::bf8, ngen::DataType::hf8)
+                && utils::one_of(d, ngen::DataType::bf8, ngen::DataType::hf8))
+            return ngen::DataType::hf;
+
+        // Post-convert only
+        if (ngen::getBits(s) > ngen::getBits(d)) return s;
+        // Pre-convert only
+        return d;
+    }
+
     template <typename GeneratorT>
     void emit_1d(GeneratorT *host, ngen_register_scope_t &scope,
             const reg_buf_data_t &src_rd, const reg_buf_data_t &dst_rd) {
@@ -2106,9 +2124,11 @@ private:
         auto tile = find_max_tile_with_fixed_stride(
                 src_layout_, dst_layout_, src_stride, dst_stride);
 
+        int layout_elems = int(dst_layout_.elems());
         int tile_elems = int(tile.elems());
-        auto ngen_sdt = to_ngen(src_layout_.type());
-        auto ngen_ddt = to_ngen(dst_layout_.type());
+        auto sdt = to_ngen(src_layout_.type());
+        auto ddt = to_ngen(dst_layout_.type());
+        auto tdt = intermediate_data_type(sdt, ddt);
 
         using gemmstone::CopyOperand;
         copy_plan_t plan(hw_, host->exec_cfg().hw().systolic_support());
@@ -2127,40 +2147,51 @@ private:
                           scope.safeRelease(flag);
                   };
 
-        auto src0 = src_rd.format(0, ngen_sdt);
-        auto dst0 = dst_rd.format(0, ngen_ddt);
-        auto has_conversion = ngen_sdt != ngen_ddt;
-        auto swizzle_first = ngen::getBits(ngen_sdt) <= ngen::getBits(ngen_ddt);
-        CopyOperand tmp;
+        auto src0 = src_rd.format(0, sdt);
+        auto dst0 = dst_rd.format(0, ddt);
 
-        if (has_conversion && !swizzle_first) {
-            tmp = plan.newTemp(ngen_ddt, tile_elems, 1);
-            CopyOperand src_op = src0.subregister(0, tile_elems, src_stride);
-            src_op.stride = (int8_t)src_stride;
-            plan.append(ngen::Opcode::mov, tile_elems, tmp, src_op);
+        auto swizzle = !src_layout_.is_strictly_equal(dst_layout_,
+                /*compare_offset=*/false, /*compare_strides=*/true,
+                /*compare_types=*/false);
+        auto pre_conversion = swizzle && sdt != tdt;
+        auto post_conversion = swizzle && ddt != tdt;
+        CopyOperand src_op = src0.subregister(0, layout_elems, src_stride);
+        CopyOperand dst_op = dst0.subregister(0, layout_elems, dst_stride);
+        CopyOperand pre_conv_op, post_conv_op;
+
+        // Below, stride = 1 assumes tdt is larger than sdt / ddt
+        if (pre_conversion) {
+            pre_conv_op = plan.newTemp(tdt, layout_elems, 1);
+            plan.append(
+                    0, ngen::Opcode::mov, layout_elems, pre_conv_op, src_op);
+            std::swap(src_op, pre_conv_op);
+        }
+        if (post_conversion) {
+            post_conv_op = plan.newTemp(tdt, layout_elems, 1);
+            plan.append(
+                    2, ngen::Opcode::mov, layout_elems, dst_op, post_conv_op);
+            std::swap(dst_op, post_conv_op);
         }
 
-        dst_layout_.for_each_tile(tile, [&](const std::vector<dim_t> &start) {
-            int src_off = src_layout_(start);
-            int dst_off = dst_layout_(start);
-            auto src = src_rd.format(src_off, ngen_sdt);
-            auto dst = dst_rd.format(dst_off, ngen_ddt);
-            CopyOperand src_op = src.subregister(0, tile_elems, src_stride);
-            CopyOperand dst_op = dst.subregister(0, tile_elems, dst_stride);
-            src_op.stride = (int8_t)src_stride;
-            dst_op.stride = (int8_t)dst_stride;
-            if (has_conversion) {
-                CopyOperand &tmp_target = swizzle_first ? dst_op : src_op;
-                tmp_target = tmp;
-            }
-            plan.append(ngen::Opcode::mov, tile_elems, src_op, dst_op);
-        });
+        if (swizzle || !(pre_conversion || post_conversion)) {
+            const auto st_bits = ngen::getBits(src_op.type);
+            const auto dt_bits = ngen::getBits(dst_op.type);
+            const auto grf_bits = ngen::GRF::bytes(hw_) << 3;
+            using start_t = std::vector<dim_t>;
 
-        if (has_conversion && swizzle_first) {
-            tmp = plan.newTemp(ngen_sdt, tile_elems, 1);
-            CopyOperand dst_op = dst0.subregister(0, tile_elems, dst_stride);
-            dst_op.stride = (int8_t)src_stride;
-            plan.append(ngen::Opcode::mov, tile_elems, dst_op, tmp);
+            dst_layout_.for_each_tile(tile, [&](const start_t &start) {
+                auto src_bit_off = src_layout_(start) * st_bits;
+                auto dst_bit_off = dst_layout_(start) * dt_bits;
+
+                // Tile operands
+                auto src = src_op, dst = dst_op;
+                src.offset = (uint8_t)(src_bit_off % grf_bits) / st_bits;
+                src.grf += src_bit_off / grf_bits;
+                dst.offset = (uint8_t)(dst_bit_off % grf_bits) / dt_bits;
+                dst.grf += dst_bit_off / grf_bits;
+
+                plan.append(1, ngen::Opcode::mov, tile_elems, dst, src);
+            });
         }
 
         plan.transform();

@@ -476,8 +476,8 @@ public:
     void set_offset(const expr_t &offset) { offset_ = offset; }
 
     bool is_strictly_equal(const layout_t &other, bool compare_offset = true,
-            bool compare_strides = true) const {
-        if (!type_.is_equal(other.type_)) return false;
+            bool compare_strides = true, bool compare_types = true) const {
+        if (compare_types && !type_.is_equal(other.type_)) return false;
         if (compare_offset && !offset_.is_equal(other.offset_)) return false;
         if (blocks_.size() != other.blocks_.size()) return false;
         for (size_t i = 0; i < blocks_.size(); i++) {
