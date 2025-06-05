@@ -2119,6 +2119,7 @@ private:
     template <typename GeneratorT>
     void emit_1d(GeneratorT *host, ngen_register_scope_t &scope,
             const reg_buf_data_t &src_rd, const reg_buf_data_t &dst_rd) {
+        constexpr ngen::Opcode mov = ngen::Opcode::mov;
         int src_stride;
         int dst_stride;
         auto tile = find_max_tile_with_fixed_stride(
@@ -2162,14 +2163,12 @@ private:
         // Below, stride = 1 assumes tdt is larger than sdt / ddt
         if (pre_conversion) {
             pre_conv_op = plan.newTemp(tdt, layout_elems, 1);
-            plan.append(
-                    0, ngen::Opcode::mov, layout_elems, pre_conv_op, src_op);
+            plan.append(0, mov, layout_elems, pre_conv_op, src_op);
             std::swap(src_op, pre_conv_op);
         }
         if (post_conversion) {
             post_conv_op = plan.newTemp(tdt, layout_elems, 1);
-            plan.append(
-                    2, ngen::Opcode::mov, layout_elems, dst_op, post_conv_op);
+            plan.append(2, mov, layout_elems, dst_op, post_conv_op);
             std::swap(dst_op, post_conv_op);
         }
 
@@ -2190,7 +2189,7 @@ private:
                 dst.offset = (uint8_t)(dst_bit_off % grf_bits) / dt_bits;
                 dst.grf += dst_bit_off / grf_bits;
 
-                plan.append(1, ngen::Opcode::mov, tile_elems, dst, src);
+                plan.append(1, mov, tile_elems, dst, src);
             });
         }
 
