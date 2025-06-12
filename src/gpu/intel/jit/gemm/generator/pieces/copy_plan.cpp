@@ -2454,6 +2454,9 @@ void CopyPlan::optimizeConcatenate(bool initial)
 
             if (i1.op != i2.op || i1.phase != i2.phase || i1.flag || i2.flag) break;
 
+            // Avoid joining across GRF boundaries
+            if (i1.dst.base != i2.dst.base || i1.dst.grf != i2.dst.grf) continue;
+
             auto joinable = [&](const CopyOperand &o1, const CopyOperand &o2, bool *outTooFar = nullptr) {
                 if (o1.kind != o2.kind) return false;
                 if (o1.kind == CopyOperand::Null) return true;
@@ -2776,9 +2779,7 @@ void CopyOperand::dump() const
     auto outType = [](DataType dt) {
         if (dt == Type::ngen_f8_e8m0())
             std::cout << "e8m0";
-        if (dt == Type::ngen_f4_e2m1())
-            std::cout << "e2m1";
-        if (dt == Type::ngen_f4_e3m0())
+        else if (dt == Type::ngen_f4_e3m0())
             std::cout << "e3m0";
         else
             std::cout << dt;

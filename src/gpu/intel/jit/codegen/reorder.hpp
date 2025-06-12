@@ -17,6 +17,8 @@
 #ifndef GPU_INTEL_JIT_CODEGEN_REORDER_HPP
 #define GPU_INTEL_JIT_CODEGEN_REORDER_HPP
 
+#include <functional>
+
 #include "common/utils.hpp"
 #include "gpu/intel/jit/codegen/operand.hpp"
 #include "gpu/intel/jit/codegen/register_scope.hpp"
@@ -1614,6 +1616,85 @@ void align_src_dst_offset(GeneratorT *host, ngen_register_scope_t &scope,
     align_src_dst_offset(host, scope, mod, dst, src1);
 }
 
+inline void advance_operand(
+        ngen::HW hw, gemmstone::CopyOperand &operand, dim_t elems) {
+    const auto grf_bits = ngen::GRF::bytes(hw) << 3;
+    const auto type_bit_size = ngen::getBits(operand.type);
+    const auto bit_off = (operand.offset + elems) * type_bit_size;
+    operand.offset = (uint8_t)((bit_off % grf_bits) / type_bit_size);
+    operand.grf += bit_off / grf_bits;
+}
+
+struct copy_plan_t : gemmstone::CopyPlan {
+    using gemmstone::CopyPlan::newTemp;
+
+    void mov(int simd, gemmstone::CopyOperand dst, gemmstone::CopyOperand src) {
+        CopyPlan::append(phase_, ngen::Opcode::mov, simd, dst, src);
+    }
+
+    copy_plan_t(ngen::HW hw, reg_allocator_t &scope, bool systolic_support)
+        : CopyPlan(hw, systolic_support), scope_(scope) {}
+
+    template <typename Generator>
+    void execute(Generator &generator) {
+        using namespace std::placeholders;
+        GRFAllocator grf = std::bind(&copy_plan_t::alloc_grf, this, _1, _2);
+        FlagAllocator flag = std::bind(&copy_plan_t::alloc_flag, this, _1, _2);
+        CopyPlan::materializeTemps(grf, flag);
+        CopyPlan::execute(generator);
+    }
+
+    void alloc_grf(int count, ngen::GRFRange &range) {
+        if (count > 0)
+            range = scope_.try_alloc_range(count);
+        else
+            scope_.safeRelease(range);
+    }
+
+    void alloc_flag(int bytes, ngen::FlagRegister &flag) {
+        if (bytes > 0)
+            flag = scope_.try_alloc_flag(bytes * 8);
+        else
+            scope_.safeRelease(flag);
+    }
+
+protected:
+    using CopyPlan::materializeTemps;
+
+    int phase_ = 0;
+    reg_allocator_t &scope_;
+
+    friend struct copy_group_t;
+    friend class reorder_impl_t;
+};
+
+struct copy_group_t {
+    copy_group_t(copy_plan_t &plan) : plan(plan), old_phase_(plan.phase_) {}
+    ~copy_group_t() {
+        if (valid_ && plan.phase_ == old_phase_) plan.phase_++;
+    }
+    void invalidate() { valid_ = false; }
+
+protected:
+    copy_plan_t &plan;
+    const int old_phase_;
+    bool valid_ = true;
+};
+
+struct reorder_operand_t {
+    layout_t layout;
+    gemmstone::CopyOperand buffer;
+
+    const type_t &type() const { return layout.type(); }
+};
+
+struct reorder_state_t {
+    reorder_operand_t src;
+    reorder_operand_t dst;
+    reorder_operand_t up;
+    reorder_operand_t down;
+};
+
 // Implementation of GRF reorder between 2D dense layouts.
 // Requirements for A -> B reorder:
 // - A and B must have the same data type
@@ -1649,22 +1730,18 @@ public:
     const tensor_t &tile() const { return tile_; }
     const std::vector<reorder_step_t> &path() const { return path_; }
 
-    template <typename GeneratorT>
-    void emit(GeneratorT *host, ngen_register_scope_t &scope,
-            const reg_buf_data_t &src_rd, const reg_buf_data_t &dst_rd) {
+    void emit(copy_plan_t &plan, gemmstone::CopyOperand &src,
+            gemmstone::CopyOperand &dst) {
+        using start_t = std::vector<dim_t>;
         auto &orig_type = src_.type();
 
         // Allocate a temporary GRF buffer if needed.
-        reg_buf_data_t tmp;
-        if (path_.size() > 1) {
-            const int grf_size = ngen::GRF::bytes(hw_);
-            tmp = scope.alloc_reg_buf_data(
-                    utils::div_up(dst_.size(), grf_size));
-        }
+        gemmstone::CopyOperand tmp;
+        if (path_.size() > 1) tmp = plan.newTemp(dst.type, dst_.size(), 1);
 
         // Iterate through found reorders.
         auto *prev_layout = &src_;
-        auto prev_rd = src_rd;
+        auto prev_op = src;
         int path_len = int(path_.size());
         for (int i = 0; i < path_len; i++) {
             auto &step = path_[i];
@@ -1677,7 +1754,7 @@ public:
             auto y = next_layout->map(tile).reinterpret(type);
 
             bool use_dst = ((path_len - i) % 2 == 1);
-            auto next_rd = (use_dst ? dst_rd : tmp);
+            gemmstone::CopyOperand next_op = (use_dst ? dst : tmp);
             auto &x_blocks = x.blocks();
             auto &y_blocks = y.blocks();
             gpu_assert(x_blocks.size() <= 1);
@@ -1685,19 +1762,20 @@ public:
             int x_stride = (x_blocks.empty() ? 1 : int(x_blocks[0].stride));
             int y_stride = (y_blocks.empty() ? 1 : int(y_blocks[0].stride));
             int width = int(tile.elems()) * orig_type.size() / type.size();
-            next_layout->for_each_tile(
-                    tile, [&](const std::vector<dim_t> &start) {
-                        int prev_off = int(prev_layout->offset(start))
-                                * orig_type.bitsize() / type.bitsize();
-                        int next_off = int(next_layout->offset(start))
-                                * orig_type.bitsize() / type.bitsize();
-                        auto x_sub = prev_rd.format(prev_off, to_ngen(type));
-                        auto y_sub = next_rd.format(next_off, to_ngen(type));
-                        emit_reorder_1d_tile(hw_, host, scope, width, x_sub,
-                                x_stride, y_sub, y_stride);
-                    });
+
+            auto swizzle = [&](const start_t &start) {
+                auto src = prev_op, dst = next_op;
+                advance_operand(hw_, src, prev_layout->operator()(start));
+                advance_operand(hw_, dst, next_layout->operator()(start));
+                src.stride = (uint8_t)x_stride;
+                dst.stride = (uint8_t)y_stride;
+
+                plan.mov(width, dst, src);
+            };
+
+            next_layout->for_each_tile(tile, swizzle);
             prev_layout = next_layout;
-            prev_rd = std::move(next_rd);
+            prev_op = next_op;
         }
     }
 
@@ -2081,121 +2159,157 @@ public:
     template <typename GeneratorT>
     void emit(GeneratorT *host, ngen_register_scope_t &scope,
             const reg_buf_data_t &src, const reg_buf_data_t &dst) {
-        if (try_emit_2d(host, scope, src, dst)) return;
-        emit_1d(host, scope, src, dst);
+        copy_plan_t plan(hw_, host->exec_cfg().hw().systolic_support());
+
+        auto from_rd = [](const reg_buf_data_t &rd) -> op_init_t {
+            return [&](dim_t elems, ngen::DataType dt) {
+                return rd.subregister(0, elems, 1, dt);
+            };
+        };
+        op_init_t from_temp = [&](dim_t elems, ngen::DataType dt) {
+            return plan.newTemp(dt, elems, 1);
+        };
+
+        auto src_op = init_operand(src_layout_, from_rd(src));
+        auto dst_op = init_operand(dst_layout_, from_rd(dst));
+
+        const auto &src_dt = src_layout_.type();
+        const auto &dst_dt = dst_layout_.type();
+        type_t tmp_dt = intermediate_data_type(src_dt, dst_dt);
+        layout_t up_layout = make_compact_layout(hw_, src_layout_, tmp_dt);
+        layout_t down_layout = make_compact_layout(hw_, dst_layout_, tmp_dt);
+
+        const bool direct_copy = layouts_compatible(src_layout_, dst_layout_);
+        const bool do_pre_conv = src_dt != tmp_dt;
+        const bool do_post_conv = dst_dt != tmp_dt;
+
+        if (direct_copy) {
+            emit(plan, dst_op, src_op);
+        } else if (do_pre_conv && do_post_conv) {
+            auto tmp_op = init_operand(up_layout, from_temp);
+            emit(plan, tmp_op, src_op);
+            if (up_layout != down_layout) {
+                // Integer swizzle
+                auto tmp2_op = init_operand(down_layout, from_temp);
+                emit(plan, tmp2_op, tmp_op);
+                std::swap(tmp_op, tmp2_op);
+            }
+            emit(plan, dst_op, tmp_op);
+        } else if (do_pre_conv) {
+            auto tmp_op = init_operand(up_layout, from_temp);
+            emit(plan, tmp_op, src_op);
+            emit(plan, dst_op, tmp_op);
+        } else if (do_post_conv) {
+            auto tmp_op = init_operand(down_layout, from_temp);
+            emit(plan, tmp_op, src_op);
+            emit(plan, dst_op, tmp_op);
+        } else {
+            emit(plan, dst_op, src_op);
+        }
+
+        plan.transform();
+        plan.execute(*host);
     }
 
 private:
-    struct copy_plan_t : gemmstone::CopyPlan {
-        using gemmstone::CopyPlan::CopyPlan;
-        using gemmstone::CopyPlan::newTemp;
-    };
+    using copy_operand_t = gemmstone::CopyOperand;
+    using op_init_t = std::function<copy_operand_t(dim_t, ngen::DataType)>;
 
-    ngen::DataType intermediate_data_type(ngen::DataType s, ngen::DataType d) {
+    void emit(copy_plan_t &plan, const reorder_operand_t &dst,
+            const reorder_operand_t &src) {
+        copy_group_t group {plan};
+        if (try_emit_2d(plan, dst, src)) return;
+        emit_1d(plan, dst, src);
+    }
+
+    bool layouts_compatible(const layout_t &a, const layout_t &b) {
+        // Test to see if all of the non-size-1 blocks of the two layouts are
+        // listed in the same order, ignoring strides.
+        using iterator_t = decltype(a.blocks().begin());
+        iterator_t a_block_it = a.blocks().begin();
+        iterator_t b_block_it = b.blocks().begin();
+        const iterator_t a_block_end = a.blocks().end();
+        const iterator_t b_block_end = b.blocks().end();
+
+        auto skip_size_1_blocks = [](iterator_t &it, const iterator_t &end) {
+            while (it != end && it->block == 1)
+                it++;
+        };
+
+        do {
+            skip_size_1_blocks(a_block_it, a_block_end);
+            skip_size_1_blocks(b_block_it, b_block_end);
+            if (a_block_it == a_block_end || b_block_it == b_block_end) break;
+
+            if (a_block_it->block != b_block_it->block) return false;
+        } while (true);
+
+        return a_block_it == a_block_end && b_block_it == b_block_end;
+    }
+
+    reorder_operand_t init_operand(
+            const layout_t &layout, const op_init_t &init) {
+        auto elems = size_in_elems(layout);
+        auto dt = to_ngen(layout.type());
+        return {layout, init(elems, dt)};
+    }
+
+    layout_t make_compact_layout(
+            ngen::HW hw, const layout_t &layout, const type_t &type) {
+        const auto grf_size = ngen::GRF::bytes(hw);
+        const auto grf_elems = grf_size * type.packing() / type.size();
+
+        std::vector<block_t> blocks;
+        dim_t old_stride = 1;
+        dim_t new_stride = 1;
+        for (auto &block : layout.blocks()) {
+            blocks.push_back(block);
+            blocks.back().stride = new_stride;
+            if ((dim_t)block.stride != old_stride) {
+                const auto pow2_aligned = utils::rnd_up_pow2(new_stride);
+                const auto grf_aligned = utils::rnd_up(new_stride, grf_elems);
+                blocks.back().stride
+                        = std::min({new_stride, grf_aligned, pow2_aligned});
+            }
+            old_stride = block.stride * block.block;
+            new_stride = blocks.back().stride * block.block;
+        }
+        return {type, layout.ndims(), 0, blocks, /*do_normalize=*/false};
+    }
+
+    dim_t size_in_elems(const layout_t &layout) {
+        const auto &type = layout.type();
+        return layout.size() * type.packing() / type.size();
+    }
+
+    type_t intermediate_data_type(const type_t &s, const type_t &d) {
         // Force up-/down-convert of small types
-        if (utils::one_of(s, ngen_f4_e2m1(), ngen_f4_e3m0())
-                || utils::one_of(d, ngen_f4_e2m1(), ngen_f4_e3m0()))
-            return ngen::DataType::hf;
-        if (utils::one_of(ngen::DataType::u4, s, d)) return ngen::DataType::ub;
-        if (utils::one_of(ngen::DataType::s4, s, d)) return ngen::DataType::b;
+        if (s.is_fp4() || d.is_fp4()) return type_t::f16();
+        if (s.is_u4() || d.is_u4()) return type_t::u8();
+        if (s.is_s4() || d.is_s4()) return type_t::s8();
 
         // Swizzle only
         if (s == d) return d;
-
-        // Convert via larger fp type
-        if (utils::one_of(s, ngen::DataType::bf, ngen::DataType::hf)
-                && utils::one_of(d, ngen::DataType::bf, ngen::DataType::hf))
-            return ngen::DataType::f;
-        if (utils::one_of(s, ngen::DataType::bf8, ngen::DataType::hf8)
-                && utils::one_of(d, ngen::DataType::bf8, ngen::DataType::hf8))
-            return ngen::DataType::hf;
-
-        // Post-convert only
-        if (ngen::getBits(s) > ngen::getBits(d)) return s;
-        // Pre-convert only
-        return d;
+        return s.bitsize() > d.bitsize() ? s : d;
     }
 
-    template <typename GeneratorT>
-    void emit_1d(GeneratorT *host, ngen_register_scope_t &scope,
-            const reg_buf_data_t &src_rd, const reg_buf_data_t &dst_rd) {
+    void emit_1d(copy_plan_t &plan, const reorder_operand_t &dst,
+            const reorder_operand_t &src) {
         constexpr ngen::Opcode mov = ngen::Opcode::mov;
         int src_stride;
         int dst_stride;
         auto tile = find_max_tile_with_fixed_stride(
-                src_layout_, dst_layout_, src_stride, dst_stride);
-
-        int layout_elems = int(dst_layout_.elems());
+                src.layout, dst.layout, src_stride, dst_stride);
         int tile_elems = int(tile.elems());
-        auto sdt = to_ngen(src_layout_.type());
-        auto ddt = to_ngen(dst_layout_.type());
-        auto tdt = intermediate_data_type(sdt, ddt);
 
-        using gemmstone::CopyOperand;
-        copy_plan_t plan(hw_, host->exec_cfg().hw().systolic_support());
-        copy_plan_t::GRFAllocator grf_allocator
-                = [&](int count, ngen::GRFRange &range) {
-                      if (count > 0)
-                          range = scope.try_alloc_range(count);
-                      else
-                          scope.safeRelease(range);
-                  };
-        copy_plan_t::FlagAllocator flag_allocator
-                = [&](int bytes, ngen::FlagRegister &flag) {
-                      if (bytes > 0)
-                          flag = scope.try_alloc_flag(bytes * 8);
-                      else
-                          scope.safeRelease(flag);
-                  };
-
-        auto src0 = src_rd.format(0, sdt);
-        auto dst0 = dst_rd.format(0, ddt);
-
-        auto swizzle = !src_layout_.is_strictly_equal(dst_layout_,
-                /*compare_offset=*/false, /*compare_strides=*/true,
-                /*compare_types=*/false);
-        auto pre_conversion = swizzle && sdt != tdt;
-        auto post_conversion = swizzle && ddt != tdt;
-        CopyOperand src_op = src0.subregister(0, layout_elems, src_stride);
-        CopyOperand dst_op = dst0.subregister(0, layout_elems, dst_stride);
-        CopyOperand pre_conv_op, post_conv_op;
-
-        // Below, stride = 1 assumes tdt is larger than sdt / ddt
-        if (pre_conversion) {
-            pre_conv_op = plan.newTemp(tdt, layout_elems, 1);
-            plan.append(0, mov, layout_elems, pre_conv_op, src_op);
-            std::swap(src_op, pre_conv_op);
-        }
-        if (post_conversion) {
-            post_conv_op = plan.newTemp(tdt, layout_elems, 1);
-            plan.append(2, mov, layout_elems, dst_op, post_conv_op);
-            std::swap(dst_op, post_conv_op);
-        }
-
-        if (swizzle || !(pre_conversion || post_conversion)) {
-            const auto st_bits = ngen::getBits(src_op.type);
-            const auto dt_bits = ngen::getBits(dst_op.type);
-            const auto grf_bits = ngen::GRF::bytes(hw_) << 3;
-            using start_t = std::vector<dim_t>;
-
-            dst_layout_.for_each_tile(tile, [&](const start_t &start) {
-                auto src_bit_off = src_layout_(start) * st_bits;
-                auto dst_bit_off = dst_layout_(start) * dt_bits;
-
-                // Tile operands
-                auto src = src_op, dst = dst_op;
-                src.offset = (uint8_t)(src_bit_off % grf_bits) / st_bits;
-                src.grf += src_bit_off / grf_bits;
-                dst.offset = (uint8_t)(dst_bit_off % grf_bits) / dt_bits;
-                dst.grf += dst_bit_off / grf_bits;
-
-                plan.append(1, mov, tile_elems, dst, src);
-            });
-        }
-
-        plan.transform();
-        plan.materializeTemps(grf_allocator, flag_allocator);
-        plan.execute(*host);
+        using start_t = std::vector<dim_t>;
+        dst_layout_.for_each_tile(tile, [&](const start_t &start) {
+            // Tile operands
+            auto tile_src = src.buffer, tile_dst = dst.buffer;
+            advance_operand(hw_, tile_src, src.layout(start));
+            advance_operand(hw_, tile_dst, dst.layout(start));
+            plan.append(1, mov, tile_elems, tile_dst, tile_src);
+        });
     }
 
     static std::vector<tensor_t> find_2d_dense_tiles(
@@ -2247,23 +2361,21 @@ private:
         return ret;
     }
 
-    template <typename GeneratorT>
-    bool try_emit_2d(GeneratorT *host, ngen_register_scope_t &scope,
-            const reg_buf_data_t &src_rd, const reg_buf_data_t &dst_rd) {
+    bool try_emit_2d(copy_plan_t &plan, const reorder_operand_t &dst,
+            const reorder_operand_t &src) {
+        using start_t = std::vector<dim_t>;
         const int grf_size = ngen::GRF::bytes(hw_);
 
-        if (src_layout_.type() != dst_layout_.type()) return false;
-        // long / f64 swizzle emits scalar instructions
-        if (src_layout_.type().scalar().size() >= 8) return false;
-        if (!src_layout_.is_dense()) return false;
-        if (!dst_layout_.is_dense()) return false;
+        if (src.layout.type() != dst.layout.type()) return false;
+        if (!src.layout.is_dense()) return false;
+        if (!dst.layout.is_dense()) return false;
 
-        const auto type = to_ngen(src_layout_.type());
-        for (const auto &tile : find_2d_dense_tiles(src_layout_, dst_layout_)) {
+        auto tiles = find_2d_dense_tiles(src.layout, dst.layout);
+        for (const auto &tile : tiles) {
             if (tile.ndims() < 2) continue;
             if (tile.elems() < 4) break;
-            auto src_tile_layout = src_layout_.map(tile);
-            auto dst_tile_layout = dst_layout_.map(tile);
+            auto src_tile_layout = src.layout.map(tile);
+            auto dst_tile_layout = dst.layout.map(tile);
             if (!dst_tile_layout.is_dense()) continue;
 
             // Set layout offset to 0 since the offset is handled by fixing up
@@ -2273,12 +2385,13 @@ private:
 
             // Try to allocate/release a temporary buffer to avoid
             // out_of_registers exception.
-            auto dummy = scope.try_alloc_range(
-                    utils::div_up(dst_tile_layout.size(), grf_size));
+            auto tile_grfs = utils::div_up(dst_tile_layout.size(), grf_size);
+            ngen::GRFRange dummy;
+            plan.alloc_grf(tile_grfs, dummy);
             if (dummy.isInvalid()) continue;
 
             // Allocation succeeded, can proceed further.
-            scope.safeRelease(dummy);
+            plan.alloc_grf(0, dummy);
 
             reorder_2d_impl_t r(hw_, tile, src_tile_layout, dst_tile_layout);
             bool tile_ok = true;
@@ -2290,17 +2403,14 @@ private:
             // Skip any 2d reorder that attempts scalar moves
             if (!tile_ok) continue;
 
-            src_layout_.for_each_tile(
-                    tile, [&](const std::vector<dim_t> &start) {
-                        auto src_off = src_layout_.offset<dim_t>(start);
-                        auto dst_off = dst_layout_.offset<dim_t>(start);
-                        auto src_tile_rd = src_rd.format(int(src_off), type);
-                        auto dst_tile_rd = dst_rd.format(int(dst_off), type);
+            auto emit_2d_tile = [&](const start_t &start) {
+                auto tile_src = src.buffer, tile_dst = dst.buffer;
+                advance_operand(hw_, tile_src, src.layout(start));
+                advance_operand(hw_, tile_dst, dst.layout(start));
+                r.emit(plan, tile_src, tile_dst);
+            };
 
-                        ngen_register_scope_t tile_scope(
-                                scope.register_allocator());
-                        r.emit(host, tile_scope, src_tile_rd, dst_tile_rd);
-                    });
+            src.layout.for_each_tile(tile, emit_2d_tile);
             return true;
         }
         return false;
