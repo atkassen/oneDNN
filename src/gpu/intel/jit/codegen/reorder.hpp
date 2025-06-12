@@ -2159,7 +2159,7 @@ public:
     template <typename GeneratorT>
     void emit(GeneratorT *host, ngen_register_scope_t &scope,
             const reg_buf_data_t &src, const reg_buf_data_t &dst) {
-        copy_plan_t plan(hw_, host->exec_cfg().hw().systolic_support());
+        copy_plan_t plan(hw_, scope, host->exec_cfg().hw().systolic_support());
 
         auto from_rd = [](const reg_buf_data_t &rd) -> op_init_t {
             return [&](dim_t elems, ngen::DataType dt) {

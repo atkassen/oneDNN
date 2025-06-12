@@ -2454,16 +2454,13 @@ void CopyPlan::optimizeConcatenate(bool initial)
 
             if (i1.op != i2.op || i1.phase != i2.phase || i1.flag || i2.flag) break;
 
-            // Avoid joining across GRF boundaries
-            if (i1.dst.base != i2.dst.base || i1.dst.grf != i2.dst.grf) continue;
-
             auto joinable = [&](const CopyOperand &o1, const CopyOperand &o2, bool *outTooFar = nullptr) {
                 if (o1.kind != o2.kind) return false;
                 if (o1.kind == CopyOperand::Null) return true;
                 if (o1.type != o2.type || o1.stride != o2.stride) return false;
                 if (o1.kind == CopyOperand::Immediate) return (o1.value == o2.value);
                 if (o1.temp != o2.temp) return false;
-                if (o1.temp && (o1.value != o2.value)) return false;
+                if (o1.temp && (o1.grf + o1.value != o2.grf + o2.value)) return false;
                 if (o1.neg != o2.neg) return false;
                 if (o1.abs != o2.abs) return false;
                 if (o1.inv != o2.inv) return false;
