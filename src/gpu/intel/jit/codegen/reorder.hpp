@@ -1653,7 +1653,7 @@ struct copy_plan_t : gemmstone::CopyPlan {
 
     void alloc_flag(int bytes, ngen::FlagRegister &flag) {
         if (bytes > 0)
-            flag = scope_.try_alloc_flag(bytes * 8);
+            flag = scope_.try_alloc_flag(bytes * 8 < 16);
         else
             scope_.safeRelease(flag);
     }
