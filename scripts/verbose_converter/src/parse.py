@@ -523,6 +523,8 @@ class ParserImpl:
             try:
                 entry[key] = parse(value)
             except (ParseError, ValueError) as e:
+                if not reqd:
+                    continue
                 raise ParseError(f"parse error: {field}: {value} ({e!s})")
         return entry
 
