@@ -1476,13 +1476,16 @@ private:
         for (int i = 0; i < inner_idx_; i++) {
             inner_elems *= (int)blocks[i].block;
         }
-        gpu_assert(total_elems * type.size() % type.packing() == 0);
-        gpu_assert(inner_elems * type.size() % type.packing() == 0);
 
+        const int max_slot_elems = blocks.empty()
+                ? type.packing()
+                : math::gcd(8 * type.packing() / type.size(),
+                        into<int>(blocks.front().block));
         int inner_bytes = inner_elems * type.size() / type.packing();
         int total_bytes = total_elems * type.size() / type.packing();
-        int slot_size
-                = init_scattered_params(send_params_, inner_bytes, total_bytes);
+        int slot_size = std::min(max_slot_elems * type.size() / type.packing(),
+                init_scattered_params(send_params_, inner_bytes, total_bytes));
+        gpu_assert(slot_size * type.size() % type.packing() == 0);
         reg_bits_per_elem = std::max(1, 4 / slot_size) * type.bitsize();
 
         int max_slots = get_max_slots(hw_, send_params_);
@@ -2509,10 +2512,17 @@ send_group_t init_scattered(const view_info_t &info,
         layout_t &reg_layout, bool fill_buf) {
     auto &vlayout = info.vlayout();
     auto &blocks = vlayout.blocks();
-    int type_size = vlayout.type().size();
-    int type_packing = vlayout.type().packing();
-    int slot_size = info.init_scattered_params(send_params, it.inner_bytes(),
-            into<int>(vlayout.elems() * type_size / type_packing));
+    const int type_size = vlayout.type().size();
+    const int type_packing = vlayout.type().packing();
+    const int max_slot_elems = blocks.empty()
+            ? type_packing
+            : math::gcd(8 * type_packing / type_size,
+                    into<int>(blocks.front().block));
+    const int total_bytes
+            = into<int>(vlayout.elems() * type_size / type_packing);
+    int slot_size = std::min(max_slot_elems * type_size / type_packing,
+            info.init_scattered_params(
+                    send_params, it.inner_bytes(), total_bytes));
     int slot_stride = std::max(4, slot_size);
     int inner_slots = ir_utils::safe_divide(it.inner_bytes(), slot_size);
 
