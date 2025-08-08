@@ -389,8 +389,7 @@ CopyOperand CopyPlan::newFlag(int bits)
 CopyTemporary CopyTemporary::createFlag(int bits)
 {
     CopyTemporary temp;
-    if (bits > 32) stub();
-    temp.bytes = (bits > 16) ? 4 : 2;
+    temp.bytes = 2 * div_up(bits, 16);
     temp.flag = true;
     return temp;
 }
@@ -2154,16 +2153,19 @@ void CopyPlan::legalizeSIMD(bool initial)
 
         if (!initial && forceSIMD1(i))
             simd0 = 1;
+        if (!initial && i.flag)
+            simd0 = std::min(simd0, 32 - i.flag.offset);
 
         if (simd0 < i.simd || splitting) {
             simd0 = std::min({simd0, opSimdMax(i.src0), opSimdMax(i.src1), opSimdMax(i.src2)});
 
             auto &isplit = split(i, false);
+
             isplit.simd = simd0;
 
             auto advance = [grf](CopyOperand &op, int n) {
                 if (op.kind == CopyOperand::Flag)
-                    op.offset += n;
+                    op.offset += std::max(n, 4);
                 if (op.kind != CopyOperand::GRF) return;
                 int ne = bytesToElements(grf, op.type);
                 op.offset += n * op.stride;
@@ -2181,6 +2183,14 @@ void CopyPlan::legalizeSIMD(bool initial)
             advance(i.src2, simd0);
             advance(i.flag, simd0);
             splitting = (i.simd > 0);
+
+            if (!initial && i.flag) {
+                temps[i.flag.value].bytes = 2 * div_up(i.flag.offset, 16);
+                if (i.flag.offset >= 32) {
+                    auto neededBits = ((i.simd >> 2) << 2) + ((i.simd & 1) << 1) + ((i.simd & 1) << 2);
+                    i.flag = newFlag(neededBits);
+                }
+            }
         } else {
             if (i.cnumSub > 0)
                 cnumOffsets.emplace_back(i.cnumMax, i.cnumSub - 1);
@@ -2752,6 +2762,9 @@ void CopyPlan::optimizeWidenIntegers()
 //
 void CopyPlan::optimizeConcatenate(bool initial)
 {
+    using FlagConcatInfo = std::pair<uint64_t, int>;
+    std::vector<FlagConcatInfo> flagConcat(temps.size(), {-1, 0});
+
     const auto grf = ngen::GRF::bytes(hw);
     auto ninsn = insns.size();
     for (size_t n1 = 0; n1 < ninsn; n1++) {
@@ -2759,7 +2772,8 @@ void CopyPlan::optimizeConcatenate(bool initial)
             auto &i1 = insns[n1];
             auto &i2 = insns[n2];
 
-            if (i1.op != i2.op || i1.phase != i2.phase || i1.flag || i2.flag) break;
+            if (i1.op != i2.op || i1.phase != i2.phase || i1.flag ^ i2.flag) break;
+            if (i1.flag && (!i1.flag.temp || !i2.flag.temp)) break;
 
             int simd1 = i1.simd; // arbitrary
             auto joinable = [&](const CopyOperand &o1, const CopyOperand &o2, bool *outTooFar = nullptr) {
@@ -2791,6 +2805,16 @@ void CopyPlan::optimizeConcatenate(bool initial)
                 doJoin &= (simd * getBytes(i1.dst.type) <= 2 * GRF::bytes(hw));
             }
 
+            if (i1.flag) {
+                auto &info = flagConcat[i2.flag.value];
+                FlagConcatInfo success = {i1.flag.value, simd - i1.simd};
+                if (tooFar || !doJoin || !i1.simd || (info.second > 0 && info != success))
+                    info.first = i2.flag.value;
+                else
+                    info = success;
+                break;
+            }
+
             if (tooFar) break;
 
             if (doJoin) {
@@ -2800,6 +2824,33 @@ void CopyPlan::optimizeConcatenate(bool initial)
                 else if (auto &i = join(i1, i2))
                     i.simd = simd;
             }
+        }
+    }
+
+    for (size_t n1 = 0; n1 < ninsn; n1++) {
+        auto &i1 = insns[n1];
+        if (!i1.flag || !i1.flag.temp) continue;
+        auto lastFlag = i1.flag.value;
+
+        for (size_t n2 = n1 + 1; n2 < ninsn; n2++) {
+            auto &i1 = insns[n1];
+            auto &i2 = insns[n2];
+
+            if (i1.op != i2.op || i1.phase != i2.phase) break;
+            if (!i1.flag || !i2.flag || !i1.flag.temp || !i2.flag.temp) break;
+            if ((i1.simd & 15) == 0) break;
+
+            auto &info = flagConcat[i2.flag.value];
+            if (info.first == i2.flag.value || info.second == 0) break;
+
+            if (info.first == lastFlag) {
+                if (auto &i = join(i1, i2)) {
+                    i.simd += info.second;
+                    temps[i.flag.value].bytes = 2 * div_up(i.simd, 16);
+                }
+            } else
+                break;
+            lastFlag = i2.flag.value;
         }
     }
 
@@ -3002,6 +3053,7 @@ protected:
 
     bool allocateFlag(CopyTemporary &temp) {
         FlagRegister flag;
+        if (temp.bytes > 4) stub();
         flagAllocator(temp.bytes, flag);
         if (!flag.isValid()) return false;
         temp.assignment = flag.index();
