@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2022-2024 Intel Corporation
+* Copyright 2022-2025 Intel Corporation
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -53,9 +53,6 @@ native_object_t get_native(const sycl_object_t &sycl_object) {
             = ::sycl::get_native<::sycl::backend::ext_oneapi_hip>(sycl_object);
     return reinterpret_cast<native_object_t>(handle);
 }
-
-template <>
-HIPcontext get_native(const ::sycl::device &device);
 
 } // namespace compat
 } // namespace amd
