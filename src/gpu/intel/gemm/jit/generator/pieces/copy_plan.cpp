@@ -274,10 +274,11 @@ void CopyPlan::transform()
     legalizeRegions();
     legalizeNegation();
     optimizeSaturate();
+    optimizeZip(true);
+    optimizeConcatenate2D();
 
     sort(SortType::SourceOrder);
 
-    optimizeZip(true);
     optimizeWriteCombine();
     optimizeWriteSpread();
 
@@ -2183,9 +2184,18 @@ void CopyPlan::legalizeSIMD(bool initial)
         // Fracture instruction into legal SIMD lengths.
         int simd0 = std::min<int>(rounddown_pow2(i.simd), simdMax);
         auto opSimdMax = [&] (const CopyOperand &op) {
-            if (op.kind != CopyOperand::GRF || op.stride == 0) return simdMax;
-            int remaining = (bytesToElements(grf, op.type) - (op.offset + 1)) / op.stride + 1;
-            return rounddown_pow2(remaining);
+            if (op.kind != CopyOperand::GRF || (op.stride == 0 && op.vs == 0)) return simdMax;
+            int simd = 0;
+            int stride = op.width == 1 ? 0 : op.stride;
+            int remaining = bytesToElements(2 * grf, op.type) - (op.offset + 1);
+            if (op.width && op.vs) {
+                int height = (remaining - (op.width - 1) * stride) / op.vs;
+                remaining -= height * op.vs;
+                simd += height * op.width;
+            }
+            if (stride)
+                simd += remaining / stride;
+            return rounddown_pow2(simd + 1);
         };
 
         if (!initial && forceSIMD1(i))
@@ -2196,6 +2206,8 @@ void CopyPlan::legalizeSIMD(bool initial)
 
             auto &isplit = split(i, false);
             isplit.simd = simd0;
+            if (simd0 == 1 || isplit.src0.vs == isplit.src0.width * isplit.src0.stride)
+                isplit.src0.width = isplit.src0.vs = 0;  // For more compact dumps
 
             auto advance = [grf](CopyOperand &op, int n) {
                 if (op.kind == CopyOperand::Flag)
@@ -2852,6 +2864,20 @@ void CopyPlan::optimizeWidenIntegers()
     }
 }
 
+bool knownJoinCondition(const CopyOperand &o1, const CopyOperand &o2, bool &result) {
+    auto set = [&] (bool r) { return result = r, true; };
+
+    if (o1.kind != o2.kind) return set(false);
+    if (o1.kind == CopyOperand::Null) return set(true);
+    if (o1.type != o2.type || o1.stride != o2.stride) return set(true);
+    if (o1.kind == CopyOperand::Immediate) return set(o1.value == o2.value);
+    if (o1.temp != o2.temp) return set(false);
+    if (o1.temp && (o1.value != o2.value)) return set(false);
+    if (o1.neg != o2.neg) return set(false);
+    if (o1.abs != o2.abs) return set(false);
+    return false;
+}
+
 // Optimization pass: concatenate instructions.
 //   The instructions may overlap partially or completely.
 //   On the initial pass (initial = true), there is no limit on the SIMD width.
@@ -2876,14 +2902,8 @@ void CopyPlan::optimizeConcatenate(bool initial)
 
             int simd1 = i1.simd; // arbitrary
             auto joinable = [&](const CopyOperand &o1, const CopyOperand &o2, bool *outTooFar = nullptr) {
-                if (o1.kind != o2.kind) return false;
-                if (o1.kind == CopyOperand::Null) return true;
-                if (o1.type != o2.type || o1.stride != o2.stride) return false;
-                if (o1.kind == CopyOperand::Immediate) return (o1.value == o2.value);
-                if (o1.temp != o2.temp) return false;
-                if (o1.temp && (o1.value != o2.value)) return false;
-                if (o1.neg != o2.neg) return false;
-                if (o1.abs != o2.abs) return false;
+                bool result;
+                if (knownJoinCondition(o1, o2, result)) return result;
                 auto lead = bytesToElements((o2.grf - o1.grf) * grf, o1.type) + (int)o2.offset - (int)o1.offset;
                 auto breadth = o1.stride * i1.simd;
                 auto elems = o1.stride ? lead / o1.stride : 0;
@@ -2917,6 +2937,74 @@ void CopyPlan::optimizeConcatenate(bool initial)
     }
 
     mergeChanges();
+}
+
+// Optimization pass: concatenate instructions using 2d regioning.
+//
+// Example input:
+//    mov (4)  r0.0<1>:uw  r10.0<1>:uw
+//    mov (4)  r0.4<1>:uw  r10.8<1>:uw
+// Output:
+//    mov (8)  r0.0<1>:uw  r10.0<8;4,1>:uw
+//
+void CopyPlan::optimizeConcatenate2D()
+{
+    bool didJoin = false;
+    const auto grf = ngen::GRF::bytes(hw);
+    auto ninsn = insns.size();
+    for (size_t n1 = 0; n1 < ninsn; n1++) {
+        for (size_t n2 = n1 + 1; n2 < ninsn; n2++) {
+            auto &i1 = insns[n1];
+            auto &i2 = insns[n2];
+
+            if (i1.op != i2.op || i1.phase != i2.phase || i1.flag || i2.flag) break;
+
+            auto vs = i1.src0.vs;
+            auto joinable = [&](const CopyOperand &o1, const CopyOperand &o2, bool do2D = false) {
+                bool result;
+                if (knownJoinCondition(o1, o2, result)) return result;
+                auto lead = bytesToElements((o2.grf - o1.grf) * grf, o1.type) + (int)o2.offset - (int)o1.offset;
+                auto breadth = o1.stride * i1.simd;
+                if (do2D) {
+                    auto width1 = o1.width ? o1.width : i1.simd;
+                    auto width2 = o2.width ? o2.width : i2.simd;
+                    if (!width1 || width1 != width2 || width1 & (width1 - 1)) return false;
+                    breadth = breadth % width1 + o1.vs * i1.simd / width1;
+                    if (!o1.vs) {
+                        const auto maxVS = std::min(32, bytesToElements(grf, o1.type));
+                        if ((lead & (lead - 1)) || lead <= 0 || lead > maxVS) return false;
+                        vs = (uint8_t)lead;
+                        return true;
+                    }
+                }
+                return lead == breadth;
+            };
+
+            bool doJoin = joinable(i1.dst, i2.dst) && joinable(i1.src0, i2.src0, true)
+                       && joinable(i1.src1, i2.src1) && joinable(i1.src2, i2.src2);
+            doJoin &= (vs != i1.simd * i1.src0.stride); // Skip normal concatenate
+            int simd = i1.simd + i2.simd;
+
+            if (doJoin) {
+                auto simd1 = i1.simd;
+                if (auto &i = join(i1, i2)) {
+                    i.simd = simd;
+                    if (!i.src0.width) {
+                        i.src0.width = simd1;
+                        i.src0.vs = vs;
+                    }
+                    didJoin = true;
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+
+    mergeChanges();
+
+    if (didJoin)
+        legalizeSIMD();  /* 2D regioning comes late in the pipeline */
 }
 
 // Optimization pass: enable write combining for byte writes (XeHPC+).
