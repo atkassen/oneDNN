@@ -235,6 +235,7 @@ protected:
     void optimizeZipAdjacent();
     void optimizeWidenIntegers();
     void optimizeConcatenate(bool initial = false);
+    void optimizeConcatenate2D();
     void optimizeWriteCombine();
     void optimizeWriteSpread();
     void optimizeIntegerDownconvert();
