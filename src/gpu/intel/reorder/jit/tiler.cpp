@@ -16,8 +16,6 @@
 
 #include "gpu/intel/reorder/jit/tiler.hpp"
 
-#include "gpu/intel/jit/utils/range.hpp"
-
 namespace dnnl {
 namespace impl {
 namespace gpu {
@@ -129,8 +127,7 @@ message_info_t estimate_message_info(
         outer[dim] = utils::div_up(outer[dim], block);
     }
 
-    auto inner_bytes = utils::div_up(
-            layout.type().with_elems(8).size() * inner_elems, 8);
+    auto inner_bytes = utils::div_up(layout.type().bitsize() * inner_elems, 8);
     auto iterations = tile_t(outer).elems();
     can_use_block_messages &= (inner_bytes % 16 == 0);
     can_use_block_messages &= (iterations == 1 || inner_bytes % grf_size == 0);
@@ -147,72 +144,303 @@ message_info_t estimate_message_info(
     return {message_kind, inner_bytes, iterations, item_size};
 }
 
-std::vector<tile_t> tiles(const hw_t &hw, layout_t a, layout_t b) {
-    using tile_pair_t = std::array<tile_t, 2>;
+// Extended layout block
+// The additional field `real_stride` is used to determine a block's position
+// in being added to the tile.
+struct ext_block_t : layout_block_t {
+    ext_block_t() = default;
+    ext_block_t(const layout_block_t &b)
+        : layout_block_t(b.dim, b.block, stride_t::unknown())
+        , real_stride(b.stride) {}
+    ext_block_t(const pvar_t &dim, dim_t block, const stride_t &stride,
+            const stride_t &real_stride)
+        : layout_block_t(dim, block, stride), real_stride(real_stride) {}
+    stride_t real_stride = stride_t::undefined();
+};
 
-    std::vector<dim_t> dims(a.ndims());
-    for (dim_idx_t i = 0; i < a.ndims(); ++i)
-        dims[i] = std::max(a.dim(i), b.dim(i));
+bool stride_less_than(const stride_t &l, const stride_t &r) {
+    // N.B.: unknown is interpreted as "larger than any fixed value"
+    if (l.is_unknown()) return false; // Both or just l is unknown
+    if (r.is_unknown()) return true; // Just r is unknown
+    return (dim_t)l < (dim_t)r; // Propagate errors from casting invalid values
+}
 
-    // Pad src/dst layouts to match each other.
-    auto pad_layout = [&](layout_t &l) {
-        std::vector<layout_block_t> padded_blocks;
-        for (auto &eb : l.enumerated_blocks()) {
-            auto b = eb.second;
-            if (l.is_outermost(eb)) {
-                dim_t inner = l.dim(b.dim) / b.block;
-                b.block = ir_utils::safe_divide(dims[b.dim], inner);
-            }
-            padded_blocks.push_back(b);
+using blocks_iterator_t = typename std::vector<ext_block_t>::iterator;
+
+std::vector<ext_block_t> get_tile_blocks(std::vector<blocks_iterator_t> &its,
+        const std::vector<blocks_iterator_t> &ends) {
+    // Idea: For a given dimension, create a sequence of blocks that will be
+    // used to construct tiles of incrementally increasing tiles.
+    const auto niters = its.size();
+    std::vector<ext_block_t> blocks;
+    if (its.empty()) return blocks;
+
+    dim_t stride = 1;
+    stride_t best_outer_stride = stride_t::unknown();
+    pvar_t dim = its[0]->dim;
+
+    auto get_factor = [](dim_t &n) {
+        for (dim_t f = 2; f < n / 2; ++f) {
+            if (n % f) continue;
+            n /= f;
+            return f;
         }
-        l = {l.type(), l.ndims(), 0, padded_blocks, /*do_normalize=*/false};
+        dim_t f = n;
+        n = 1;
+        return f;
     };
-    pad_layout(a);
-    pad_layout(b);
-    gpu_assert(ir_utils::is_equal(a.dims(), b.dims()));
 
-    auto can_be_mapped = [](const layout_t &l, const tile_t &t) {
-        std::vector<dim_t> rem_dims = t.values();
-        for (auto &b : l.blocks()) {
-            auto &rem_dim = rem_dims[b.dim];
-            if (rem_dim >= b.block) {
-                if (rem_dim % b.block != 0) return false;
-                rem_dim /= b.block;
+    while (true) {
+        for (size_t i = 0; i < niters; ++i) {
+            if (its[i] == ends[i]) return blocks;
+        }
+        dim_t inner = 0, outer = 0;
+        stride_t real_stride = stride_t::unknown();
+        for (auto &it : its) {
+            if (it->stride.is_unknown()) {
+                if (stride_less_than(it->real_stride, best_outer_stride))
+                    best_outer_stride = it->real_stride;
                 continue;
             }
-            if (b.block % rem_dim != 0) return false;
-            rem_dim = 1;
+            // Suppose gcd(a1, a2, ..., aN) == 1
+            // and gcd(a1 * b1, a2 * b2, ..., aN * bN) = outer.
+            // Let gcd(b1, b2, ..., bN) = inner. Then outer % inner == 0.
+            outer = math::gcd(outer, (dim_t)it->stride * it->block / stride);
+            inner = math::gcd(inner, it->block);
+            if (stride_less_than(it->real_stride, real_stride))
+                real_stride = it->real_stride;
         }
-        for (auto d : rem_dims)
-            gpu_assert(d == 1);
-        return true;
+        if (!inner) break;
+        if (outer == 1) {
+            for (auto &it : its) {
+                if (it->stride.is_unknown()) continue;
+                it++;
+            }
+            continue;
+        }
+        for (auto &it : its) {
+            if (it->stride.is_unknown()) continue;
+            dim_t from_block = outer * stride / (dim_t)it->stride;
+            it->block /= from_block;
+            it->stride *= from_block;
+            it->real_stride *= from_block;
+            if (it->block == 1) it++;
+        }
+        // This block must be added to the tile unbroken to avoid divisibility
+        // issues.
+        const auto indivisible = outer / inner;
+        stride *= indivisible;
+        // Inner is a block that can be added piecemeal. Remove its smallest
+        // factor > 1 and add it to the blocks.
+        while (inner > 1) {
+            auto factor = get_factor(inner);
+            blocks.emplace_back(dim, factor, stride, real_stride);
+            stride *= factor;
+            real_stride *= factor;
+        }
+    }
+    if (blocks.empty() || !blocks.back().stride.is_unknown())
+        blocks.emplace_back(dim, 1, stride_t::unknown(), best_outer_stride);
+    return blocks;
+}
+
+std::vector<ext_block_t> get_tile_blocks(const std::vector<layout_t> &layouts,
+        std::vector<std::vector<ext_block_t>> &blocks) {
+    if (layouts.empty()) return {};
+    dim_idx_t ndims = layouts.front().ndims();
+    for (auto &l : layouts)
+        ndims = std::min(l.ndims(), ndims);
+
+    const auto n = layouts.size();
+    std::vector<blocks_iterator_t> its(n);
+    std::vector<blocks_iterator_t> ends(n);
+
+    std::vector<ext_block_t> tile_blocks;
+
+    for (size_t j = 0; j < n; ++j)
+        its[j] = ends[j] = blocks[j].begin();
+
+    for (dim_idx_t i = 0; i < ndims; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            const auto end = blocks[j].end();
+            while (ends[j] != end && ends[j]->dim.index() == i)
+                ++ends[j];
+        }
+
+        auto dim_blocks = get_tile_blocks(its, ends);
+        tile_blocks.insert(
+                tile_blocks.end(), dim_blocks.begin(), dim_blocks.end());
+
+        std::swap(its, ends);
+        ends = its;
+    }
+
+    auto by_stride = [](const ext_block_t &l, const ext_block_t &r) {
+        return stride_less_than(l.real_stride, r.real_stride);
     };
 
-    auto add_pseudo_dimension = [](const layout_t &l) {
-        auto layout_size = l.size();
-        return [=](const tile_t &t) {
-            auto dims = t.values();
-            dims.push_back(layout_size);
-            return tile_t(dims);
-        };
+    std::sort(tile_blocks.begin(), tile_blocks.end(), by_stride);
+    return tile_blocks;
+}
+
+void pad_layouts(std::vector<layout_t> &layouts) {
+    if (layouts.empty()) return;
+    const auto ndims = layouts.front().ndims();
+    std::vector<dim_t> shared_blocks(ndims, 0);
+
+    // Compute the blocking for each dimension that is shared among all layouts
+    // which blocking in that dimension (i.e., if the dimension is plain,
+    // ignore it).
+    auto compute_shared_blocks = [&](const layout_t &l) {
+        for (auto &eb : l.enumerated_blocks()) {
+            if (!l.is_outermost(eb)) continue;
+            auto &b = eb.second;
+            auto &inner_block = shared_blocks[b.dim];
+            auto inner = l.dim(b.dim) / b.block;
+            if (inner == 1) continue;
+            inner_block = math::gcd(inner, inner_block);
+        }
+    };
+    for (auto &l : layouts)
+        compute_shared_blocks(l);
+
+    // Pad each dimension, including plain dimensions to the shared blocking
+    // found above.
+    auto pad_layout = [&](layout_t &l) {
+        const auto packing = l.type().packing();
+        std::vector<layout_block_t> padded_blocks;
+        for (auto &eb : l.enumerated_blocks()) {
+            padded_blocks.push_back(eb.second);
+            if (l.is_outermost(eb)) {
+                auto &b = padded_blocks.back();
+                dim_t dim = l.dim(b.dim);
+                dim_t block = shared_blocks[b.dim];
+                if (!block) block = dim;
+                dim_t inner = dim / b.block;
+                if (math::gcd(dim, block) % packing) continue;
+                b.block = utils::rnd_up(dim, block) / inner;
+            }
+        }
+        l = {l.type(), ndims, 0, padded_blocks, /*do_normalize=*/false};
+    };
+    for (auto &l : layouts)
+        pad_layout(l);
+}
+
+std::vector<tile_t> generate_tiles(const hw_t &hw,
+        std::vector<layout_t> layouts, const bool strict = true) {
+    if (layouts.empty()) return {};
+    auto ndims = layouts.front().ndims();
+
+    auto by_dim = [](const ext_block_t &l, const ext_block_t &r) {
+        return l.dim < r.dim;
     };
 
-    auto mappable_tiles = [&](const tile_t &t) {
-        return can_be_mapped(a, t) && can_be_mapped(b, t);
+    auto get_blocks = [&](const layout_t &l) {
+        // Partition the layout by dimension. For each dimension, list all of
+        // the blocks in order and adjust their strides to be dense. Maintain
+        // the original stride as the "real stride" for later sorting purposes.
+        auto l_blocks = l.blocks();
+        const auto nblocks = l_blocks.size();
+        std::vector<ext_block_t> blocks;
+        blocks.reserve(nblocks);
+
+        // Find the boundary between the inner blocks and the outer blocks.
+        // layout_t::is_outermost will interleave these -- we want to optimize
+        // the cases where inner blocks cover the entire dimension, that is,
+        // the true outer block is size 1.
+        // This will also signal which blocks can be divided arbitrarily in
+        // non-strict mode (the true outermost blocks). If tiling in strict
+        // mode, tiles must divide dimensions exactly, so skip marking
+        // outermost blocks.
+        auto inner_idx = nblocks;
+        if (!strict) {
+            std::vector<bool> seen(l.ndims());
+            const auto end = l_blocks.rend();
+            for (auto it = l_blocks.rbegin(); it != end; ++it, --inner_idx) {
+                if (seen[it->dim] || !inner_idx) break;
+                seen[it->dim] = true;
+            }
+        }
+
+        std::vector<dim_t> strides(l.ndims(), 1);
+        for (size_t i = 0; i < nblocks; ++i) {
+            auto b = l_blocks[i];
+            auto real_stride = b.stride;
+            if (i >= inner_idx) {
+                b.stride = stride_t::unknown();
+                b.block = 1;
+            } else
+                b.stride = strides[b.dim];
+            strides[b.dim] *= b.block;
+            blocks.emplace_back(b.dim, b.block, b.stride, real_stride);
+        }
+        std::sort(blocks.begin(), blocks.end(), by_dim);
+        return blocks;
     };
 
-    auto merge_tiles = [](const tile_pair_t &p) {
-        auto ndims = p[0].size() - 1;
-        std::vector<dim_t> dims(ndims);
+    pad_layouts(layouts);
+
+    // Gather the blocks used for tiling. Also, determine the order of the
+    // outermost blocks so that tiles can be expanded along those dimensions
+    // in round-robin fashion (non-strict mode only). Finally, determine the
+    // maximum tile size required to cover all layouts.
+    std::vector<std::vector<ext_block_t>> blocks;
+    blocks.reserve(layouts.size());
+    std::vector<ext_block_t> outer_blocks(ndims);
+    tile_t max_tile = layouts[0].dims();
+    for (auto &l : layouts) {
+        auto l_blocks = get_blocks(l);
+        for (auto &b : l_blocks) {
+            if (b.stride.is_unknown()) continue;
+            auto &stride = outer_blocks[b.dim].real_stride;
+            if (!stride.is_unknown() || stride_less_than(b.real_stride, stride))
+                outer_blocks[b.dim] = b;
+        }
+        blocks.push_back(std::move(l_blocks));
+
         for (dim_idx_t i = 0; i < ndims; ++i)
-            dims[i] = std::max(p[0][i], p[1][i]);
-        return tile_t(dims);
-    };
+            max_tile[i] = std::max(max_tile[i], l.dim(i));
+    }
 
-    auto take_smaller = [](const tile_t &a, const tile_t &b) {
-        return a.elems() < b.elems();
-    };
+    // Generate blocks used to incrementally expand the tile to generate a
+    // sequence of increasing tiles. When this is exhausted, expand each
+    // dimension by a factor of 2 in round-robin fashion according to the order
+    // of outermost blocks determined above (non-strict mode only)
+    tile_t tile(ndims);
+    std::vector<tile_t> rev_tiles = {tile};
+    auto tile_blocks = get_tile_blocks(layouts, blocks);
+    for (auto &b : tile_blocks) {
+        if (b.stride.is_unknown()) continue;
+        dim_t stride = b.stride;
+        if (stride > tile[b.dim]) {
+            gpu_assert(stride % tile[b.dim] == 0);
+            tile[b.dim] = stride;
+            rev_tiles.push_back(tile);
+        }
+        tile[b.dim] *= b.block;
+        rev_tiles.push_back(tile);
+    }
 
+    auto by_stride = [](const ext_block_t &l, const ext_block_t &r) {
+        return stride_less_than(l.real_stride, r.real_stride);
+    };
+    std::sort(outer_blocks.begin(), outer_blocks.end(), by_stride);
+
+    bool have_outer_blocks = true;
+    while (have_outer_blocks) {
+        have_outer_blocks = false;
+        for (auto &block : outer_blocks) {
+            if (max_tile[block.dim] <= tile[block.dim]) continue;
+            tile[block.dim] *= 2;
+            rev_tiles.push_back(tile);
+            have_outer_blocks = true;
+        }
+    }
+    return rev_tiles;
+}
+
+std::vector<tile_t> tiles(const hw_t &hw, layout_t a, layout_t b) {
     const auto eu_count = hw.eu_count();
     auto cmp = [&](const tile_t &l, const tile_t &r) {
         auto l_threads_reqd = a.elems() / l.elems();
@@ -238,20 +466,6 @@ std::vector<tile_t> tiles(const hw_t &hw, layout_t a, layout_t b) {
         return l.elems() > r.elems();
     };
 
-    // Incrementally increase subtiles in a and b. The goal is to find the
-    // maximum tiles so that the final combined tile covers dense regions as big
-    // as possible in a/b layouts.
-    std::vector<tile_t> candidate_tiles;
-    auto a_tiles = inner_tiles(a.blocks(), a.ndims()) | filter(mappable_tiles)
-            | transform(add_pseudo_dimension(a));
-    auto b_tiles = inner_tiles(b.blocks(), b.ndims()) | filter(mappable_tiles)
-            | transform(add_pseudo_dimension(b));
-    auto tiles = merge(a_tiles, b_tiles, take_smaller) | transform(merge_tiles);
-
-    const int elem_size = std::max(a.type().size(), b.type().size());
-    const dim_t max_layout_size = max_strided_bytes(hw, a.type(), b.type());
-    const dim_t max_elems = max_packed_bytes(hw) / elem_size;
-
     auto get_grf_layout_size = [&](const tile_t &tile) {
         auto elems = tile.elems();
         dim_t grf_layout_size = 0;
@@ -265,6 +479,12 @@ std::vector<tile_t> tiles(const hw_t &hw, layout_t a, layout_t b) {
         return grf_layout_size;
     };
 
+    const auto tiles = generate_tiles(hw, {a, b});
+    const int elem_size = std::max(a.type().size(), b.type().size());
+    const dim_t max_layout_size = max_strided_bytes(hw, a.type(), b.type());
+    const dim_t max_elems = max_packed_bytes(hw) / elem_size;
+
+    std::vector<tile_t> candidate_tiles;
     for (auto tile : tiles) {
         if (tile.elems() > max_elems) break;
         if (get_grf_layout_size(tile) > max_layout_size) continue;
@@ -277,12 +497,7 @@ std::vector<tile_t> tiles(const hw_t &hw, layout_t a, layout_t b) {
     for (size_t i = 0; i < candidate_tiles.size(); ++i)
         if (cmp(candidate_tiles[i], candidate_tiles[best_idx])) best_idx = i;
     candidate_tiles.resize(best_idx + 1);
-    auto best = candidate_tiles.back();
-    candidate_tiles.erase(
-            std::remove_if(candidate_tiles.begin(), candidate_tiles.end(),
-                    [&](const tile_t &t) { return !best.is_divisible(t); }),
-            candidate_tiles.end());
-    candidate_tiles.shrink_to_fit();
+
     return candidate_tiles;
 }
 
