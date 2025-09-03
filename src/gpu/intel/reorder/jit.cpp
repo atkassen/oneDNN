@@ -16,8 +16,6 @@
 
 #include "gpu/intel/reorder/jit.hpp"
 
-#include <utility>
-
 #include "common/c_types_map.hpp"
 #include "common/utils.hpp"
 #include "gpu/intel/jit/ir/kernel_info.hpp"
@@ -102,38 +100,16 @@ status_t gen_t::pd_t::init(impl::engine_t *engine, impl::engine_t *src_engine,
             VERBOSE_RUNTIMEDIM_UNSUPPORTED);
     VDISPATCH_REORDER(src_mdw.ndims() == dst_mdw.ndims(),
             VERBOSE_INCONSISTENT_MDS, "src", "dst");
-    int ndims = src_mdw.ndims();
 
-    layout_t src_layout {src_mdw, /*do_normalize=*/false};
-    layout_t dst_layout {dst_mdw, /*do_normalize=*/false};
-
-    VDISPATCH_REORDER(!(src_layout.elems() == 0 || dst_layout.elems() == 0),
-            VERBOSE_EMPTY_TENSOR, "src_layout || dst_layout");
-
-    std::vector<dim_t> dims(ndims);
-    for (int i = 0; i < ndims; ++i)
-        dims[i] = std::max(src_layout.dim(i), dst_layout.dim(i));
-
-    auto check_layout = [&](const layout_t &l) {
-        for (auto &eb : l.enumerated_blocks()) {
-            auto &b = eb.second;
-            if (l.is_outermost(eb)) {
-                dim_t inner = l.dim(b.dim) / b.block;
-                if (dims[b.dim] % inner) return false;
-            }
-        }
-        return true;
-    };
-
-    VDISPATCH_REORDER(
-            check_layout(src_layout), VERBOSE_UNSUPPORTED_TENSOR_LAYOUT, "src");
-    VDISPATCH_REORDER(
-            check_layout(dst_layout), VERBOSE_UNSUPPORTED_TENSOR_LAYOUT, "dst");
+    VDISPATCH_REORDER(src_mdw.nelems() != 0, VERBOSE_EMPTY_TENSOR, "src");
+    VDISPATCH_REORDER(dst_mdw.nelems() != 0, VERBOSE_EMPTY_TENSOR, "dst");
     VDISPATCH_REORDER(intel_engine->mayiuse_ngen_kernels(),
             VERBOSE_UNSUPPORTED_DEVICE_FEATURE, "ngen_kernels");
 
     auto *gpu_attr
             = utils::downcast<gpu_primitive_attr_t *>(attr()->gpu_attr_.get());
+    layout_t src_layout {src_mdw, /*do_normalize=*/false};
+    layout_t dst_layout {dst_mdw, /*do_normalize=*/false};
     hw_t hw(engine);
     exec_config_t exec_cfg(hw);
     exec_cfg.set_regs(hw.prefer_large_grf(gpu_attr) ? 256 : 128);
@@ -142,22 +118,16 @@ status_t gen_t::pd_t::init(impl::engine_t *engine, impl::engine_t *src_engine,
     cfg->set_zp_cfg(zp_cfg);
 
     auto byte_aligned = [&](const layout_t &layout) {
-        auto dims = cfg->tiles().front().values();
-        dim_t contiguous_inner_elems = 1;
-        dim_t innermost_elems = 1;
         const auto packing = layout.type().packing();
         if (packing == 1) return true;
-        for (auto &b : layout.blocks()) {
+        auto sub = layout.sub(cfg->tiles().front());
+        dim_t contiguous_inner_elems = 1;
+        dim_t innermost_elems = 1;
+        for (auto &b : sub.blocks()) {
             if (b.block == 1) continue;
             if ((dim_t)b.stride != contiguous_inner_elems) break;
             if (innermost_elems == 1) innermost_elems = b.block;
-            if (b.block > dims[b.dim]) {
-                if (b.block % dims[b.dim] == 0)
-                    contiguous_inner_elems *= dims[b.dim];
-                break;
-            }
             contiguous_inner_elems *= b.block;
-            dims[b.dim] /= b.block;
         }
         return innermost_elems % packing == 0
                 || contiguous_inner_elems % (4 * packing) == 0;
