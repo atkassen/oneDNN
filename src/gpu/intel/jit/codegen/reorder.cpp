@@ -142,7 +142,7 @@ void reorder_2d_impl_t::emit(
     copy_operand_t tmp;
     const auto &type = dst_.type();
     auto elems = into<int>(dst_.size() * type.packing() / type.size());
-    if (path_.size() > 1) tmp = plan.newTemp(to_ngen(type), elems, 1);
+    if (path_.size() > 1) tmp = plan.new_temp(to_ngen(type), elems, 1);
 
     // Iterate through found reorders.
     auto *prev_layout = &src_;
@@ -493,7 +493,7 @@ void reorder_impl_t::emit(copy_plan_t &plan, const reorder_operand_t &src,
     };
 
     op_init_t from_temp = [&](int elems, ngen::DataType dt) {
-        return plan.newTemp(dt, elems, 1);
+        return plan.new_temp(dt, elems, 1);
     };
 
     auto emit = [&](reorder_operand_t &dst, const reorder_operand_t &src) {

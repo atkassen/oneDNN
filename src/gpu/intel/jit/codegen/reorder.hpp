@@ -46,8 +46,6 @@ struct copy_operand_t : gemmstone::CopyOperand {
 };
 
 struct copy_plan_t : gemmstone::CopyPlan {
-    using gemmstone::CopyPlan::newTemp;
-
     copy_plan_t(ngen_register_scope_t &scope, bool systolic_support)
         : CopyPlan(scope.hw(), systolic_support), scope_(scope) {}
 
@@ -83,12 +81,22 @@ struct copy_plan_t : gemmstone::CopyPlan {
             scope_.safeRelease(flag);
     }
 
+    copy_operand_t new_temp(ngen::DataType dt, int elems, int stride,
+            int align = 0, int offset = 0) {
+        allocates_temporaries_ = true;
+        return CopyPlan::newTemp(dt, elems, stride, align, offset);
+    }
+
+    bool allocates_temporaries() const { return allocates_temporaries_; }
+
     int phase = 0;
 
 protected:
     using CopyPlan::materializeTemps;
+    using CopyPlan::newTemp;
 
     ngen_register_scope_t &scope_;
+    bool allocates_temporaries_ = false;
 };
 
 template <typename GeneratorT>
@@ -354,7 +362,8 @@ public:
                 auto src_op = init_operand(src_tile, from_rd(src, src_off));
                 auto dst_op = init_operand(dst_tile, from_rd(dst, dst_off));
                 emit(plan, src_op, dst_op);
-                plan.phase = base_phase;
+                plan.phase = plan.allocates_temporaries() ? base_phase
+                                                          : plan.phase + 1;
             };
             dst_layout_.for_each_tile(tile, emit_tile);
             plan.transform();
