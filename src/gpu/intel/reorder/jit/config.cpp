@@ -58,15 +58,16 @@ config_t::config_t(const exec_config_t &ec, layout_t src, layout_t dst) {
         if (outer != 1) grid_idx = std::min<dim_idx_t>(grid_idx + 1, 2);
     }
 
-    for (dim_idx_t i = 0; i < ndims; ++i) {
-        pvar_t d(i);
-        dim_t tg_dim = thr_tile[i];
-        dim_t outer = utils::div_up(dims[d], tg_dim);
-
-        if (outer % 2 == 0) {
-            tg_tile[d] = 2;
-            break;
-        }
+    const auto &hw = ec.hw();
+    const auto regs = !ec.regs() && hw.large_grf_support() ? 256 : ec.regs();
+    const dim_t max_factor = hw.max_tg_size(regs, ec.simd());
+    for (auto &b : src_layout().user().blocks()) {
+        const auto &d = b.dim;
+        dim_t outer = utils::div_up(dims[d], thr_tile[d]);
+        auto factor = std::min(outer & -outer, max_factor);
+        if (factor <= 1) continue;
+        tg_tile[d] = factor;
+        break;
     }
 
     padded_dims().set(dims);

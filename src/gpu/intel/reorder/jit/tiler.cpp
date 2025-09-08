@@ -309,17 +309,20 @@ void pad_layouts(std::vector<layout_t> &layouts) {
     auto pad_layout = [&](layout_t &l) {
         const auto packing = l.type().packing();
         std::vector<layout_block_t> padded_blocks;
+        bool seen = false;
         for (auto &eb : l.enumerated_blocks()) {
             padded_blocks.push_back(eb.second);
+            auto &b = padded_blocks.back();
+            dim_t dim = l.dim(b.dim);
+            if (dim == 1) continue;
             if (l.is_outermost(eb)) {
-                auto &b = padded_blocks.back();
-                dim_t dim = l.dim(b.dim);
                 dim_t block = shared_blocks[b.dim];
-                if (!block) block = dim;
+                if (!block) block = utils::rnd_up_pow2(dim);
+                if (!seen && math::gcd(dim, block) % packing) continue;
                 dim_t inner = dim / b.block;
-                if (math::gcd(dim, block) % packing) continue;
                 b.block = utils::rnd_up(dim, block) / inner;
             }
+            seen = true;
         }
         l = {l.type(), ndims, 0, padded_blocks, /*do_normalize=*/false};
     };
@@ -400,7 +403,7 @@ std::vector<tile_t> generate_tiles(const hw_t &hw,
         blocks.push_back(std::move(l_blocks));
 
         for (dim_idx_t i = 0; i < ndims; ++i)
-            max_tile[i] = std::max(max_tile[i], l.dim(i));
+            max_tile[i] = std::min(max_tile[i], l.dim(i));
     }
 
     // Generate blocks used to incrementally expand the tile to generate a
