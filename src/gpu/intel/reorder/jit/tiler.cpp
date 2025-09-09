@@ -180,7 +180,7 @@ std::vector<ext_block_t> get_tile_blocks(std::vector<blocks_iterator_t> &its,
     pvar_t dim = its[0]->dim;
 
     auto get_factor = [](dim_t &n) {
-        for (dim_t f = 2; f < n / 2; ++f) {
+        for (dim_t f = 2; f <= n / 2; ++f) {
             if (n % f) continue;
             n /= f;
             return f;
@@ -287,11 +287,18 @@ void pad_layouts(std::vector<layout_t> &layouts) {
     if (layouts.empty()) return;
     const auto ndims = layouts.front().ndims();
     std::vector<dim_t> shared_blocks(ndims, 0);
+    auto dims = layouts.front().dims();
+    uint32_t has_broadcast = 0;
 
     // Compute the blocking for each dimension that is shared among all layouts
     // which blocking in that dimension (i.e., if the dimension is plain,
     // ignore it).
     auto compute_shared_blocks = [&](const layout_t &l) {
+        for (dim_idx_t i = 0; i < ndims; ++i) {
+            auto ldim = l.dim(i), &tdim = dims[i];
+            has_broadcast |= ((ldim != tdim) << i);
+            tdim = std::max(ldim, tdim);
+        }
         for (auto &eb : l.enumerated_blocks()) {
             if (!l.is_outermost(eb)) continue;
             auto &b = eb.second;
@@ -317,7 +324,16 @@ void pad_layouts(std::vector<layout_t> &layouts) {
             if (dim == 1) continue;
             if (l.is_outermost(eb)) {
                 dim_t block = shared_blocks[b.dim];
-                if (!block) block = utils::rnd_up_pow2(dim);
+                if (!block) {
+                    // Layouts are "plain". Do nothing if this dimension is
+                    // truly plain.
+                    if (!(has_broadcast & (1 << b.dim))) continue;
+                    // Blocking covers the whole dimension for some layout.
+                    // Pad to (a multiple of) a nice power of 2.
+                    auto pow2_factor = dims[b.dim] & -dims[b.dim];
+                    block = std::min(utils::rnd_up_pow2(dim),
+                            utils::rnd_up(dim, pow2_factor));
+                }
                 if (!seen && math::gcd(dim, block) % packing) continue;
                 dim_t inner = dim / b.block;
                 b.block = utils::rnd_up(dim, block) / inner;
