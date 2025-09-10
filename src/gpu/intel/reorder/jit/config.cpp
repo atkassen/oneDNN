@@ -59,7 +59,7 @@ config_t::config_t(const exec_config_t &ec, layout_t src, layout_t dst) {
     }
 
     const dim_t max_tg_size = ec.hw().max_tg_size(ec.regs(), ec.simd());
-    dim_t max_factor = std::min(8l, max_tg_size);
+    dim_t max_factor = std::min((dim_t)8, max_tg_size);
     for (dim_idx_t d = 0; d < ndims; d++) {
         dim_t outer = utils::div_up(dims[d], thr_tile[d]);
         auto factor = utils::max_div(outer, max_factor);
