@@ -331,8 +331,7 @@ void pad_layouts(std::vector<layout_t> &layouts) {
                     // Blocking covers the whole dimension for some layout.
                     // Pad to (a multiple of) a nice power of 2.
                     auto pow2_factor = dims[b.dim] & -dims[b.dim];
-                    block = std::min(utils::rnd_up_pow2(dim),
-                            utils::rnd_up(dim, pow2_factor));
+                    block = utils::rnd_up(dim, pow2_factor);
                 }
                 if (!seen && math::gcd(dim, block) % packing) continue;
                 dim_t inner = dim / b.block;
