@@ -316,20 +316,23 @@ void pad_layouts(std::vector<layout_t> &layouts) {
     auto pad_layout = [&](layout_t &l) {
         const auto packing = l.type().packing();
         std::vector<layout_block_t> padded_blocks;
-        bool seen = false;
+        bool seen_inner_block = false, seen_a_block = false;
         for (auto &eb : l.enumerated_blocks()) {
+            seen_inner_block = seen_a_block;
             padded_blocks.push_back(eb.second);
             auto &b = padded_blocks.back();
             dim_t dim = l.dim(b.dim);
             if (dim == 1) continue;
+            seen_a_block = true;
             if (l.is_outermost(eb)) {
                 dim_t block = shared_blocks[b.dim];
+                if (!block && dim < 64) continue;
                 if (!block) block = 8;
-                if (!seen && math::gcd(dim, block) % packing) continue;
+                if (!seen_inner_block && math::gcd(dim, block) % packing)
+                    continue;
                 dim_t inner = dim / b.block;
                 b.block = utils::rnd_up(dim, block) / inner;
             }
-            seen = true;
         }
         l = {l.type(), ndims, 0, padded_blocks, /*do_normalize=*/false};
     };
@@ -501,9 +504,8 @@ std::vector<tile_t> tiles(const hw_t &hw, layout_t a, layout_t b) {
     std::vector<tile_t> candidate_tiles;
     for (auto tile : tiles) {
         if (tile.elems() > max_elems) break;
-        if (get_grf_layout_size(tile) > max_layout_size) continue;
-        if (candidate_tiles.empty() || tile != candidate_tiles.back())
-            candidate_tiles.push_back(std::move(tile));
+        if (get_grf_layout_size(tile) > max_layout_size) break;
+        candidate_tiles.push_back(std::move(tile));
     }
     gpu_assert(!candidate_tiles.empty());
 
