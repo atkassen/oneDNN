@@ -341,9 +341,7 @@ std::vector<tile_t> generate_tiles(
         const hw_t &hw, std::vector<layout_t> layouts) {
     if (layouts.empty()) return {};
     auto ndims = layouts.front().ndims();
-    bool strict = false;
-    for (auto &l : layouts)
-        strict |= (l.type().packing() != 1);
+    const bool strict = true;
 
     auto by_dim = [](const ext_block_t &l, const ext_block_t &r) {
         return l.dim < r.dim;
