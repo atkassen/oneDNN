@@ -324,15 +324,7 @@ void pad_layouts(std::vector<layout_t> &layouts) {
             if (dim == 1) continue;
             if (l.is_outermost(eb)) {
                 dim_t block = shared_blocks[b.dim];
-                if (!block) {
-                    // Layouts are "plain". Do nothing if this dimension is
-                    // truly plain.
-                    if (!(has_broadcast & (1 << b.dim))) continue;
-                    // Blocking covers the whole dimension for some layout.
-                    // Pad to (a multiple of) a nice power of 2.
-                    auto pow2_factor = dims[b.dim] & -dims[b.dim];
-                    block = utils::rnd_up(dim, pow2_factor);
-                }
+                if (!block) block = 8;
                 if (!seen && math::gcd(dim, block) % packing) continue;
                 dim_t inner = dim / b.block;
                 b.block = utils::rnd_up(dim, block) / inner;
