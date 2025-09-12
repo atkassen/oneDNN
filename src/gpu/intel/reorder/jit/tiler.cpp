@@ -345,10 +345,13 @@ void pad_layouts(std::vector<layout_t> &layouts) {
         pad_layout(l);
 }
 
-std::vector<tile_t> generate_tiles(const hw_t &hw,
-        std::vector<layout_t> layouts, const bool strict = true) {
+std::vector<tile_t> generate_tiles(
+        const hw_t &hw, std::vector<layout_t> layouts) {
     if (layouts.empty()) return {};
     auto ndims = layouts.front().ndims();
+    bool strict = false;
+    for (auto &l : layouts)
+        strict |= (l.type().packing() != 1);
 
     auto by_dim = [](const ext_block_t &l, const ext_block_t &r) {
         return l.dim < r.dim;
@@ -410,7 +413,7 @@ std::vector<tile_t> generate_tiles(const hw_t &hw,
     for (auto &l : layouts) {
         auto l_blocks = get_blocks(l);
         for (auto &b : l_blocks) {
-            if (b.stride.is_unknown()) continue;
+            if (!b.stride.is_unknown()) continue;
             auto &stride = outer_blocks[b.dim].real_stride;
             if (!stride.is_unknown() || stride_less_than(b.real_stride, stride))
                 outer_blocks[b.dim] = b;
@@ -441,6 +444,8 @@ std::vector<tile_t> generate_tiles(const hw_t &hw,
     }
 
     auto by_stride = [](const ext_block_t &l, const ext_block_t &r) {
+        if (l.real_stride.is_undefined()) return false;
+        if (r.real_stride.is_undefined()) return true;
         return stride_less_than(l.real_stride, r.real_stride);
     };
     std::sort(outer_blocks.begin(), outer_blocks.end(), by_stride);
@@ -449,6 +454,7 @@ std::vector<tile_t> generate_tiles(const hw_t &hw,
     while (have_outer_blocks) {
         have_outer_blocks = false;
         for (auto &block : outer_blocks) {
+            if (block.real_stride.is_undefined()) continue;
             if (max_tile[block.dim] <= tile[block.dim]) continue;
             tile[block.dim] *= 2;
             rev_tiles.push_back(tile);
