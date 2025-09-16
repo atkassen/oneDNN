@@ -1388,6 +1388,17 @@ void CopyPlan::plan4BitShifts(CopyInstruction &i)
 
     bool high = (i.dst.type == ngen_b16_h4x());
 
+    if ((i.simd == 1 || i.src0.stride == 1) && i.src0.offset % 4 == 0) {
+        i.op = high ? Opcode::shl : Opcode::shr;
+        i.dst.type = DataType::uw;
+        i.src0.type = DataType::uw;
+        i.src0.vs = 1;
+        i.src0.width = 4;
+        i.src0.stride = 0;
+        i.src1 = ngen::Immediate::uv(high ? 0x048C048C : 0xC840C840);
+        return;
+    }
+
     std::array<CopyInstruction*, 2> ie = {&i, nullptr};
 
     // Split into high and low nybble conversions if both are present.
