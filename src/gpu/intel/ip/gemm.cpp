@@ -44,8 +44,8 @@ status_t gemm_fwd_t::execute_forward(const exec_ctx_t &ctx) const {
     args.a_zero_point = b0;
     args.b_zero_point = a0;
     args.c_zero_point = c0;
-    args.a_scales = &CTX_IN_STORAGE(DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS);
-    args.b_scales = &CTX_IN_STORAGE(DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC);
+    args.a_scales = &CTX_IN_STORAGE(DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC);
+    args.b_scales = &CTX_IN_STORAGE(DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS);
     args.c_scales = &CTX_IN_STORAGE(DNNL_ARG_ATTR_SCALES | DNNL_ARG_DST);
     args.exec_args = ctx.args();
 
