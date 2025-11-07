@@ -41,7 +41,9 @@ public:
         , context_(context)
         , is_user_context_(context) {}
 
-    ~engine_impl_t() override = default;
+    ~engine_impl_t() override {
+        if (context_) clReleaseContext(context_);
+    };
 
     status_t init() override {
         cl_int err = CL_SUCCESS;
