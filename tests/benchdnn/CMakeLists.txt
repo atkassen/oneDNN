@@ -80,7 +80,8 @@ function(register_benchdnn_test engine driver test_file)
        AND NOT ${DNNL_GPU_VENDOR} MATCHES "NVIDIA"
        AND NOT ${DNNL_GPU_VENDOR} MATCHES "AMD")
         set(mode_modifier "--mode-modifier=P")
-        if(DNNL_USE_CLANG_SANITIZER STREQUAL "Address")
+        if(NOT ${driver} STREQUAL "graph"
+           AND DNNL_USE_CLANG_SANITIZER STREQUAL "Address")
             set(memory_kind "--memory-kind=buffer")
         endif()
     endif()

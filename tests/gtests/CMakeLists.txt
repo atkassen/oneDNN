@@ -229,7 +229,10 @@ function(register_gtest exe src)
 endfunction()
 
 set(skip_usm_pattern "^$") # no skip by default
-if(DNNL_WITH_SYCL)
+if(DNNL_USE_CLANG_SANITIZER STREQUAL "Address" AND NOT DNNL_GPU_RUNTIME STREQUAL "NONE")
+    # Skip all GPU USM tests if using address sanitizer
+    set(skip_usm_pattern ".")
+elseif(DNNL_WITH_SYCL)
     # - cross_engine_reorder creates usm pointers on CPU and GPU that belong to
     #   the different context, which causes synchronization issues.
     #   FIXME: the library should handle this case gracefully.
