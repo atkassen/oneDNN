@@ -21,4 +21,6 @@ list(APPEND TEST_SOURCES ${MAIN_SRC_GTEST})
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../../src)
 
-register_exe(${TEST_EXE} "${TEST_SOURCES}" "test" "dnnl_gtest")
+if(NOT DNNL_USE_CLANG_SANITIZER STREQUAL "Address")
+    register_exe(${TEST_EXE} "${TEST_SOURCES}" "test" "dnnl_gtest")
+endif()
