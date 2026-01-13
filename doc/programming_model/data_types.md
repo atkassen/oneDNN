@@ -22,7 +22,10 @@ in comparison to fp32.
 | f8\_e4m3  | [OFP8 standard 8-bit floating-point](https://www.opencompute.org/documents/ocp-8-bit-floating-point-specification-ofp8-revision-1-0-2023-06-20-pdf) with 4 exponent and 3 mantissa bits |
 | e8m0      | [MX standard 8-bit scaling type](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf)                                                                 |
 | f4\_e2m1  | [MX standard 4-bit floating-point](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) with 2 exponent and 1 mantissa bits                           |
-| f4\_e3m0  | 4-bit floating-point with 3 exponent bits and no mantissa bit                                                                                                                           |
+| f4\_e3m0  | 4-bit floating-point with 3 exponent bits and no mantissa bit(1)                                                                                                                        |
+
+Footnotes:
+1. f4\_e3m0 is deprecated, and will be removed in a future release.
 
 ## Inference and Training
 
