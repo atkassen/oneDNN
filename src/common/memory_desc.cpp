@@ -31,6 +31,17 @@ using namespace dnnl::impl::utils;
 namespace dnnl {
 namespace impl {
 
+void warn_if_deprecated(data_type_t data_type) {
+    static std::once_flag flag;
+    if (data_type != data_type::f4_e3m0) return;
+
+    std::call_once(flag, []() {
+        VWARN(common, runtime,
+                "data type f4_e3m0 is deprecated and will be removed in a "
+                "future release");
+    });
+}
+
 status_t memory_desc_init_host_scalar(
         memory_desc_t &memory_desc, data_type_t data_type) {
     memory_desc.ndims = 1;
@@ -41,6 +52,7 @@ status_t memory_desc_init_host_scalar(
     bool args_ok = memory_desc_sanity_check(memory_desc.ndims, memory_desc.dims,
             memory_desc.data_type, memory_desc.format_kind);
     VCHECK_MEMORY(args_ok, invalid_arguments, VERBOSE_MEM_DESC_CHECK_FAIL);
+    warn_if_deprecated(data_type);
 
     return success;
 }
@@ -58,6 +70,7 @@ status_t memory_desc_init_by_tag(memory_desc_t &memory_desc, int ndims,
     bool args_ok
             = memory_desc_sanity_check(ndims, dims, data_type, format_kind);
     VCHECK_MEMORY(args_ok, invalid_arguments, VERBOSE_MEM_DESC_CHECK_FAIL);
+    warn_if_deprecated(data_type);
 
     auto md = memory_desc_t();
     md.ndims = ndims;
@@ -92,6 +105,7 @@ status_t memory_desc_init_by_strides(memory_desc_t &memory_desc, int ndims,
     bool args_ok = memory_desc_sanity_check(
             ndims, dims, data_type, format_kind::undef);
     VCHECK_MEMORY(args_ok, invalid_arguments, VERBOSE_MEM_DESC_CHECK_FAIL);
+    warn_if_deprecated(data_type);
 
     auto md = memory_desc_t();
     md.ndims = ndims;
@@ -137,6 +151,7 @@ status_t memory_desc_init_by_csr_encoding(memory_desc_t &memory_desc, int ndims,
     bool args_ok = memory_desc_sanity_check(
             ndims, dims, data_type, format_kind::undef);
     VCHECK_MEMORY(args_ok, invalid_arguments, VERBOSE_MEM_DESC_CHECK_FAIL);
+    warn_if_deprecated(data_type);
 
     auto md = memory_desc_t();
     md.ndims = ndims;
@@ -168,6 +183,7 @@ status_t memory_desc_init_by_coo_encoding(memory_desc_t &memory_desc, int ndims,
     bool args_ok = memory_desc_sanity_check(
             ndims, dims, data_type, format_kind::undef);
     VCHECK_MEMORY(args_ok, invalid_arguments, VERBOSE_MEM_DESC_CHECK_FAIL);
+    warn_if_deprecated(data_type);
 
     auto md = memory_desc_t();
     md.ndims = ndims;
@@ -194,6 +210,7 @@ status_t memory_desc_init_by_packed_encoding(memory_desc_t &memory_desc,
     bool args_ok = memory_desc_sanity_check(
             ndims, dims, data_type, format_kind::undef);
     VCHECK_MEMORY(args_ok, invalid_arguments, VERBOSE_MEM_DESC_CHECK_FAIL);
+    warn_if_deprecated(data_type);
 
     auto md = memory_desc_t();
     md.ndims = ndims;
@@ -561,6 +578,7 @@ status_t memory_desc_init_by_string_tag(memory_desc_t &md, int ndims,
             "ndims deduced (%d) from the tag \'%s\' is inconsistent with "
             "provided ndims (%d)",
             ndims_from_tag, tag.c_str(), ndims);
+    warn_if_deprecated(data_type);
 
     auto &blk = md.format_desc.blocking;
 
@@ -874,6 +892,7 @@ extern "C" status_t DNNL_API dnnl_memory_desc_create_with_string_tag(
 extern "C" status_t DNNL_API dnnl_memory_desc_set_data_type(
         memory_desc_t *memory_desc, data_type_t data_type) {
     if (any_null(memory_desc)) return invalid_arguments;
+    dnnl::impl::warn_if_deprecated(data_type);
     memory_desc->data_type = data_type;
     return success;
 }

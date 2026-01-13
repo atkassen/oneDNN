@@ -17,8 +17,11 @@
 #ifndef COMMON_MEMORY_DESC_HPP
 #define COMMON_MEMORY_DESC_HPP
 
+#include <mutex>
+
 #include "common/c_types_map.hpp"
 #include "common/nstl.hpp"
+#include "common/verbose.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -278,6 +281,8 @@ status_t memory_desc_reshape(memory_desc_t &out_memory_desc,
 status_t memory_desc_permute_axes(memory_desc_t &out_memory_desc,
         const memory_desc_t &in_memory_desc, const int *perm);
 
+void warn_if_deprecated(data_type_t data_type);
+
 } // namespace impl
 } // namespace dnnl
 
@@ -294,7 +299,9 @@ struct dnnl_memory_desc : public dnnl::impl::c_compatible {
         , padded_offsets {}
         , offset0(0)
         , format_kind(dnnl::impl::format_kind::undef)
-        , format_desc {} {}
+        , format_desc {} {
+        dnnl::impl::warn_if_deprecated(data_type);
+    }
     // Number of dimensions
     int ndims;
     // Dimensions in the following order:
