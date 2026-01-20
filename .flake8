@@ -1,0 +1,11 @@
+[flake8]
+max-line-length = 80
+extend-ignore = E203
+exclude =
+    # No need to traverse our git directory
+    .git,
+    .github,
+    # There's no value in checking cache directories
+    __pycache__,
+    # Ignore third-party code
+    oneperf/third_party

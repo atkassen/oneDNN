@@ -1,3 +1,19 @@
 [tool.black]
 line-length = 80
 include = 'scripts\/.*\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 80
+multi_line_output = 3
+include_trailing_comma = true
+use_parentheses = true
+force_grid_wrap = 0
+src_paths = ["scripts/"]
+
+[tool.mypy]
+files = ["scripts/"]
+follow_imports = "skip"
+install_types = true
+check_untyped_defs = true
+disable_error_code = ["override"]
