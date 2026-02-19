@@ -149,6 +149,18 @@ struct direct_copy_t : public primitive_t {
         size_t size = memory_desc_wrapper(pd()->dst_md()).size();
         auto &input = CTX_IN_STORAGE(DNNL_ARG_FROM);
         auto &output = CTX_OUT_STORAGE(DNNL_ARG_TO);
+
+        auto *src_handle = static_cast<const uint8_t *>(input.data_handle());
+        auto *dst_handle = static_cast<uint8_t *>(output.data_handle());
+        // In-place copy is a no-op.
+        if (src_handle == dst_handle) return status::success;
+        // Overlapping region read/write order is undefined.
+        if (src_handle <= dst_handle + size
+                && src_handle + size >= dst_handle) {
+            VERROR(common, runtime, "Overlapping copy is unsupported.");
+            return status::runtime_error;
+        }
+
         auto &deps = stream->ctx().get_deps();
         return stream->copy(input, output, size, deps, deps);
     }
