@@ -123,7 +123,7 @@ status_t xe_t::pd_t::init_conf(impl::engine_t *engine) {
     conf.concat_axis = pd->concat_dim();
 
     dim_t max_elems = dst_mdw.nelems();
-    int concat_axis_end = 0;
+    dim_t concat_axis_end = 0;
     conf.scales_mask = 0;
     for (int i = 0; i < conf.n; ++i) {
         const memory_desc_wrapper src_mdw(pd->src_md(i));
