@@ -207,9 +207,9 @@ struct tile_info_t {
     std::vector<int> thread_group_blocks(dim_t size) const;
     std::vector<dim_t> loop_blocks(dim_t size, int iter_blk) const;
 
-    static bool block_ok(dim_t size, int blk, int target_eff) {
+    static bool block_ok(dim_t size, dim_t blk, int target_eff) {
         dim_t size_padded = utils::rnd_up(size, blk);
-        double eff = size / (double)size_padded;
+        double eff = 1.0 - (blk - size % blk) % blk / (double)size_padded;
         return eff * 100 >= target_eff;
     }
 

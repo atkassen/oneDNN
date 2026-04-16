@@ -102,16 +102,16 @@ struct x2_tile_info_t {
     void set_iter_unit0(int unit) { d0.set_iter_unit(unit); }
     void set_iter_unit1(int unit) { d1.set_iter_unit(unit); }
 
-    std::vector<std::pair<int, int>> iter_blocks(
+    std::vector<std::pair<dim_t, dim_t>> iter_blocks(
             dim_t size0, dim_t size1) const {
         if (!any(flags & tile_flags_t::iter)) return {std::make_pair(1, 1)};
 
-        std::vector<std::pair<int, int>> ret;
-        int lo = into<int>(std::min(
-                size0 * size1, (dim_t)tile_info_t::default_min_iter_blk));
-        int hi = tile_info_t::default_max_iter_blk;
+        std::vector<std::pair<dim_t, dim_t>> ret;
+        const dim_t lo = std::min(
+                size0 * size1, (dim_t)tile_info_t::default_min_iter_blk);
+        const dim_t hi = tile_info_t::default_max_iter_blk;
         for (int eff = 100; eff > 0; eff--) {
-            for (int ij = lo; ij <= hi; ij++) {
+            for (dim_t ij = lo; ij <= hi; ij++) {
                 if (!d.is_iter_ok(ij)) continue;
                 auto factors = tile_info_t::get_factors(ij);
                 if (!tile_info_t::block_ok(size0 * size1, ij, eff)) continue;
@@ -128,7 +128,7 @@ struct x2_tile_info_t {
         return ret;
     }
 
-    std::vector<std::pair<int, int>> thread_group_blocks() const {
+    std::vector<std::pair<dim_t, dim_t>> thread_group_blocks() const {
         if (any(flags & tile_flags_t::thread_group)) gpu_error_not_expected();
         return {std::make_pair(1, 1)};
     }
