@@ -783,7 +783,7 @@ void binary(op_kind_t op, const tensor_t &dst, const tensor_t &src0,
         auto src1_buf = src1.subbuf(coord);
 
         int64_t simd = default_ctx().simd();
-        for (int idx = 0; idx < subtile_elems; idx += simd) {
+        for (int64_t idx = 0; idx < subtile_elems; idx += simd) {
             int elems = into<int>(std::min(subtile_elems - idx, simd));
             auto s0 = load_t::make(src0.layout.type().with_elems(elems),
                     src0.buf, idx * src0.layout.type().size());

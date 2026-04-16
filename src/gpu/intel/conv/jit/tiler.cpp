@@ -158,7 +158,7 @@ const layout_t &compute_layout(const config_t &cfg, tensor_kind_t kind) {
     return cfg.src_layout().compute();
 }
 
-int get_layout_unit(const config_t &cfg, const layout_t &layout,
+dim_t get_layout_unit(const config_t &cfg, const layout_t &layout,
         tensor_kind_t tensor_kind, const pvar_t &d) {
     auto &prb = cfg.prb();
     if (!is_reduction_dim(d, prb)) return 1;
@@ -172,14 +172,14 @@ int get_layout_unit(const config_t &cfg, const layout_t &layout,
     if (blocks.size() <= 1) return 1;
     blocks.resize(blocks.size() - 1);
 
-    int ret = 1;
+    dim_t ret = 1;
     for (dim_t b : blocks)
         ret *= b;
     return ret;
 }
 
-int get_layout_unit(const config_t &cfg, const pvar_t &d) {
-    int ret = 1;
+dim_t get_layout_unit(const config_t &cfg, const pvar_t &d) {
+    dim_t ret = 1;
     for (auto t :
             {tensor_kind_t::src, tensor_kind_t::wei, tensor_kind_t::dst}) {
         auto &l = compute_layout(cfg, t);
@@ -289,14 +289,14 @@ private:
         bool is_fused_reduction = (rdims > 1);
         for (auto &d : iter_) {
             auto &info = tile_info(d);
-            int unit = 1;
+            dim_t unit = 1;
             if (is_vectorized_dim(d, prb, iter_)) unit = cfg.vec_size();
             if (is_reduction_dim(d, prb)) {
                 // This is to ensure that reduction-related address shifts are
                 // constant. For example with a_blk = 8 and Ax16a layout there are two
                 // kinds of "a" shifts: inside the innermost block and outer shift.
-                int dpas_unit = (is_dpas ? 32 / prb.a_data_type_size : 1);
-                int layout_unit = get_layout_unit(cfg, d);
+                dim_t dpas_unit = (is_dpas ? 32 / prb.a_data_type_size : 1);
+                dim_t layout_unit = get_layout_unit(cfg, d);
                 if (is_fused_reduction) {
                     // dpas unit is handled by finalize_fused_reduction().
                     unit = math::lcm(unit, layout_unit);
@@ -472,9 +472,9 @@ dim_t grf_usage_bytes(fma_kind_t fma, dim_t b_iter, dim_t m_iter, dim_t n_iter,
     dim_t b_elems = b_iter * k_iter * n_iter;
     dim_t c_elems = m_iter * n_iter;
     dim_t a_size = a_elems * a_type_size;
-    int a_reorder_size = 0;
+    dim_t a_reorder_size = 0;
     dim_t b_size = b_elems * b_type_size;
-    int b_reorder_size = 0;
+    dim_t b_reorder_size = 0;
     dim_t c_size = c_elems * c_type_size;
     int dword_size = 4;
     if (fma == fma_kind_t::mad) {
@@ -483,14 +483,14 @@ dim_t grf_usage_bytes(fma_kind_t fma, dim_t b_iter, dim_t m_iter, dim_t n_iter,
         if (b_type_size == 1) b_reorder_size += b_elems * dword_size;
     }
 
-    int abc_size = 0;
+    dim_t abc_size = 0;
     abc_size += a_size + a_reorder_size;
     abc_size += b_size + b_reorder_size;
     abc_size += c_size;
     return abc_size;
 }
 
-int slm_usage_bytes(const config_t &cfg, dim_t b_tg, dim_t m_tg, dim_t n_tg,
+dim_t slm_usage_bytes(const config_t &cfg, dim_t b_tg, dim_t m_tg, dim_t n_tg,
         dim_t k_tg, dim_t b_iter, dim_t m_iter, dim_t n_iter, dim_t k_iter) {
     if (cfg.hw() >= ngen::HW::XeHPC) return 0;
 
@@ -507,14 +507,14 @@ int slm_usage_bytes(const config_t &cfg, dim_t b_tg, dim_t m_tg, dim_t n_tg,
     dim_t b_slm_elems = m_tg * b_iter * n_iter * k_iter;
     dim_t a_slm_size = a_slm_elems * prb.a_data_type_size;
     dim_t b_slm_size = b_slm_elems * prb.b_data_type_size;
-    int ab_slm_size = 0;
+    dim_t ab_slm_size = 0;
     if (slm_a) ab_slm_size += a_slm_size;
     if (slm_b) ab_slm_size += b_slm_size;
-    int slm_size = max_slm_bufs * ab_slm_size;
+    dim_t slm_size = max_slm_bufs * ab_slm_size;
     return slm_size;
 }
 
-int slm_usage_bytes_for_params(
+dim_t slm_usage_bytes_for_params(
         const config_t &cfg, const blocking_params_t &params) {
     auto &prb = cfg.prb();
     auto tg = to_gemm(params.blocking().thread_group(), prb);
@@ -758,13 +758,13 @@ private:
     bool check_slm_usage_ok(const context_t &ctx) const {
         if (!is_enabled(check_kind_t::check_slm_usage)) return true;
 
-        int slm_size = slm_usage_bytes(cfg_, ctx.b_tg, ctx.m_tg, ctx.n_tg,
+        dim_t slm_size = slm_usage_bytes(cfg_, ctx.b_tg, ctx.m_tg, ctx.n_tg,
                 ctx.k_tg, ctx.b_iter, ctx.m_iter, ctx.n_iter, ctx.k_iter);
         if (slm_size == 0) return true;
 
         auto &options = cfg_.options();
         dim_t tg_size = ctx.b_tg * ctx.m_tg * ctx.n_tg * ctx.k_tg;
-        int max_slm_size = compute::device_info_t::max_slm_size_per_tg(
+        dim_t max_slm_size = compute::device_info_t::max_slm_size_per_tg(
                 convert_ngen_arch_to_dnnl(cfg_.hw()), into<int>(tg_size),
                 options.regs() > 128);
         if (slm_size > max_slm_size) return false;
@@ -801,7 +801,7 @@ private:
     // Checks that the layout can be split based as required by level_blocks.
     static bool layout_dim_ok(prop_kind_t prop, tensor_kind_t tensor_kind,
             const layout_t &layout, const pvar_t &d,
-            std::vector<std::pair<level_t, int>> level_blocks) {
+            std::vector<std::pair<level_t, dim_t>> level_blocks) {
         if (level_blocks.empty()) return true;
         dim_idx_t dim_idx = tensor_conv_dim_index(d, tensor_kind);
         if (dim_idx == dim_idx::invalid) return true;
@@ -811,8 +811,8 @@ private:
         }
         if (blocks.size() <= 1) return true;
         blocks.resize(blocks.size() - 1);
-        auto step = [&](std::pair<level_t, int> &kv) {
-            int &block = kv.second;
+        auto step = [&](std::pair<level_t, dim_t> &kv) {
+            auto &block = kv.second;
             for (auto &b : blocks) {
                 if (b == 1) continue;
                 if (b % block == 0) {
@@ -845,7 +845,7 @@ private:
         for (auto &d : blk.thread_group())
             dims.insert(d);
         for (auto &d : dims) {
-            std::vector<std::pair<level_t, int>> blocks;
+            std::vector<std::pair<level_t, dim_t>> blocks;
             if (blk.iter().has(d))
                 blocks.emplace_back(level_t::iter, blk.iter_dim(d));
             if (blk.thread_group().has(d))
@@ -1252,7 +1252,7 @@ void sort_by_model_scores(params_generator_t &params_gen, const config_t &cfg,
         float score = model::get_score(cfg, p);
         float eff = p.blocking().get_efficiency(cfg.shape(/*pad=*/true));
         dim_t regs = utils::div_up(grf_usage_bytes(cfg, p), cfg.grf_size());
-        int slm_size = slm_usage_bytes_for_params(cfg, p);
+        dim_t slm_size = slm_usage_bytes_for_params(cfg, p);
         table << p.str() << (int)(score * 1000) / 1000.0 << eff << regs
               << slm_size << std::endl;
     }

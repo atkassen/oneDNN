@@ -35,7 +35,7 @@ public:
         block_t(const dsl::idx_t &dim, int size, int grid_id)
             : dim(dim), size(size), grid_id(grid_id) {}
         dsl::idx_t dim;
-        int size = 0;
+        int64_t size = 0;
         int grid_id = -1;
     };
 
@@ -46,7 +46,7 @@ public:
         }
 
         dsl::idx_t dim;
-        int size = 0;
+        int64_t size = 0;
         expr_t grid_var;
     };
 

@@ -204,7 +204,7 @@ struct hw_config_t {
 
     float max_gops_per_sec() const {
         float max_ops_per_sec = freq * eus * ops_per_clock;
-        return max_ops_per_sec / 1e9;
+        return max_ops_per_sec / 1e9f;
     }
 };
 
@@ -261,8 +261,11 @@ struct bmnk_conv_sample_t {
     }
 
     float wave_util() const {
-        int64_t waves = utils::div_up(threads(), (int64_t)hw_cfg.max_threads());
-        return threads() / (waves * hw_cfg.max_threads());
+        const int64_t thr = threads();
+        const int64_t max_threads = hw_cfg.max_threads();
+        const int64_t partial_wave_thr
+                = (max_threads - (thr % max_threads)) % max_threads;
+        return 1.f - partial_wave_thr / (float)max_threads;
     }
 
     float tg_util() const {
@@ -297,7 +300,7 @@ struct bmnk_conv_sample_t {
         return k_rounded > k_tg ? 1.0f : 0.0f;
     }
 
-    float eff() const { return ops() / 1e9 / sec / hw_cfg.max_gops_per_sec(); }
+    float eff() const { return ops() / 1e9f / sec / hw_cfg.max_gops_per_sec(); }
 
     static std::vector<const char *> feature_names() {
         std::vector<const char *> ret;
@@ -432,7 +435,7 @@ struct conv_sample_t {
         dim_t b, m, n, k;
         to_gemm_tile(shape, b, m, n, k);
         float ops = 2.0f * b * m * n * k;
-        return ops / 1e9 / sec / hw_cfg.max_gops_per_sec();
+        return ops / 1e9f / sec / hw_cfg.max_gops_per_sec();
     }
 
     bmnk_conv_sample_t to_bmnk_conv_sample() const {

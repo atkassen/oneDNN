@@ -220,12 +220,12 @@ copy_operand_t &copy_operand_t::advance(
     const auto bit_off = (offset + elems * stride) * type_bit_size;
     const auto grf_shift = bit_off / grf_bits;
     if (temp || block_bases.empty())
-        grf += grf_shift;
+        grf += (int16_t)grf_shift;
     else {
         const auto orig_block_base = block_bases[block_off];
         const auto grf_off = grf - orig_block_base + grf_shift;
         const auto block_shift = grf_off / block_size;
-        block_off += block_shift;
+        block_off += (int)block_shift;
         if (block_off >= nblocks)
             // If we advance past the end of the buffer, continue linearly from
             // (max_base + block_size).

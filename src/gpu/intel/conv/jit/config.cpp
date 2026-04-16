@@ -1595,8 +1595,8 @@ public:
     }
 
     entry_t next(const tile_t &inner) {
-        int m_size = 1;
-        int n_size = 1;
+        int64_t m_size = 1;
+        int64_t n_size = 1;
         for (auto &d : inner) {
             auto bmnk = to_gemm(d, prb_);
             if (bmnk == pvars::m) {
@@ -1625,7 +1625,7 @@ private:
 
 walk_order_t compute_walk_order(const config_t &cfg) {
     auto &prb = cfg.prb();
-    int tg_size = 1;
+    dim_t tg_size = 1;
     tile_t inner;
     for (auto &d : index_dims(cfg.prb().prop_kind())) {
         dim_t iter = cfg.iter_dim(d);
