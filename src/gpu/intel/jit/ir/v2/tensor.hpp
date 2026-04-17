@@ -626,7 +626,7 @@ public:
     int size() const {
         int ret = 1;
         for (auto &idx : idxs_)
-            ret *= idx.size;
+            ret *= static_cast<int>(idx.size);
         return ret;
     }
     bool is_empty() const;
