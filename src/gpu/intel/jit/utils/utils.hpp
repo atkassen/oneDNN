@@ -443,7 +443,8 @@ template <typename T, typename U,
                         && std::is_integral<U>::value
                         && (std::is_signed<decltype(std::declval<T>()
                                         / std::declval<U>())>::value
-                                == std::is_signed<T>::value),
+                                == (std::is_signed<T>::value
+                                        || std::is_signed<U>::value)),
                 T>::type>
 inline R safe_divide(T a, U b) {
     gpu_assert(b != 0 && a % b == 0) << "Can't divide: " << a << " / " << b;
