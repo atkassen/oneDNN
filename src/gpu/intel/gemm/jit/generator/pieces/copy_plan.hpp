@@ -78,7 +78,8 @@ struct CopyOperand
     friend CopyOperand abs(CopyOperand o) { o.abs = true; return o; }
 
 #if GEMMSTONE_ENABLE_COPY_PLAN_DUMP
-    void dump() const;
+    void dump(std::ostream &os) const;
+    void dump() const { dump(std::cout); }
 #endif
 };
 
@@ -110,7 +111,8 @@ struct CopyInstruction
     inline void execute(Generator &g);
 
 #if GEMMSTONE_ENABLE_COPY_PLAN_DUMP
-    void dump(const CopyPlan &plan) const;
+    void dump(std::ostream &os, const CopyPlan &plan, bool sortInfo = false) const;
+    void dump(const CopyPlan &plan, bool sortInfo = false) const { dump(std::cout, plan, sortInfo); }
 #endif
 };
 
@@ -192,7 +194,8 @@ public:
     int tempFlagBytes() const;
 
 #if GEMMSTONE_ENABLE_COPY_PLAN_DUMP
-    void dump(int n = -1) const;
+    void dump(std::ostream &os, bool sortInfo, int n = -1) const;
+    void dump(bool sortInfo = false, int n = -1) const { dump(std::cout, sortInfo, n); }
     int cycleCount() const;
 #endif
 
