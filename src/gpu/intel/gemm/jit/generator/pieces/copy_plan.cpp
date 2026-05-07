@@ -728,8 +728,8 @@ void CopyPlan::split2DRegions()
     for (auto &i: insns) {
         if ((is2D(i.dst) && !is4(i.dst.type)) || is2D(i.src1) || is2D(i.src2))
             stub("Unsupported 2D region");
-        if (is2D(i.src0)){
-	    if(i.dst.stride > 4)
+        if (is2D(i.src0)) {
+            if (i.dst.stride > 4)
                 continue;
             if (i.flag) stub("Unsupported predication");
             int w = i.src0.width, vs = i.src0.vs, hs = i.src0.stride;
@@ -1010,7 +1010,7 @@ bool CopyPlan::planShflUpconvertXe3p(CopyInstruction &i)
     lut.stride = 0;         /* will be fixed up later */
 
     int orig_simd  = i.simd;
-    if (copySrc){
+    if (copySrc) {
          i.simd /= 2;
          i.simd = std::max(16, i.simd);
     }
@@ -1245,14 +1245,10 @@ CopyOperand CopyPlan::bfImmediate(uint16_t bits, bool ternary)
 // {b,ub}->bf sequence.
 void CopyPlan::planInt8ToBF(CopyInstruction &i)
 {
-    if (i.src0.neg || i.sat || i.hasCMod() || !bfArithmeticOK(i)) {
+    const bool is_xe3p = one_of(hw, {ngen::HW::XE3P_35_10, ngen::HW::XE3P_35_11, ngen::HW::XE3P_UNKNOWN});
+    if (i.src0.neg || i.sat || i.hasCMod() || is_xe3p || !bfArithmeticOK(i)) {
         copyThrough(i, DataType::f);
         return;
-    }
-    bool is_xe3p = one_of(hw, {ngen::HW::XE3P_35_10, ngen::HW::XE3P_35_11, ngen::HW::XE3P_UNKNOWN});
-    if (is_xe3p){
-            copyThrough(i, DataType::f);
-            return;
     }
 
     auto ie = splitMultiple<3>(i);
@@ -1288,7 +1284,8 @@ void CopyPlan::planInt8ToBF(CopyInstruction &i)
     ie[2]->src1 = Immediate::hf(0x4000);
 }
 
-void CopyPlan::legalizeBfImmediate(CopyInstruction &i1){
+void CopyPlan::legalizeBfImmediate(CopyInstruction &i1)
+{
     if (i1.src1.kind != CopyOperand::Immediate) return;
     auto op = i1.op;
     auto temp = newTemp(DataType::uw, i1.simd, 1);
@@ -1480,14 +1477,14 @@ void CopyPlan::planInt4Upconversion(CopyInstruction &i)
         }
     } else {
         bool even = (i.src0.offset % 2 == 0);
-	if ( i.dst.stride > 4 ) stub("Unsupported stride.");
+        if (i.dst.stride > 4) stub("Unsupported stride.");
         i.src0.stride /= 2;
         i.src0.offset /= 2;
-	if ( getBits(i.dst.type) < 8 ) {
-	    i.dst.type = DataType::ub;
-	    i.dst.stride /= 2;
-	    i.dst.offset /= 2;
-	}
+        if (getBits(i.dst.type) < 8) {
+            i.dst.type = DataType::ub;
+            i.dst.stride /= 2;
+            i.dst.offset /= 2;
+        }
 
         if (even) {
             // Low nybbles
@@ -1512,9 +1509,11 @@ void CopyPlan::planInt4Upconversion(CopyInstruction &i)
             }
         } else {
             // High nybble
-            bool is_xe3p = one_of(hw, {ngen::HW::XE3P_35_10, ngen::HW::XE3P_35_11, ngen::HW::XE3P_UNKNOWN});
+            const bool is_xe3p = one_of(hw, {ngen::HW::XE3P_35_10, ngen::HW::XE3P_35_11, ngen::HW::XE3P_UNKNOWN});
             auto tmp = newTemp(i.dst.type, i.simd, i.dst.stride, 1, 0);
-            if(is_xe3p && (i.src0.offset * getBytes(i.src0.type) != i.dst.offset * getBytes(i.dst.type))){
+            auto s0BO = i.src0.offset * getBytes(i.src0.type);
+            auto dBO = i.dst.offset * getBytes(i.dst.type);
+            if (is_xe3p && (s0BO != dBO)) {
                 auto ie = splitMultiple<2>(i);
 
                 // High nybble
@@ -1682,15 +1681,15 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
             ie[2]->dst = ssrc;
             ie[2]->dst.type = DataType::uw;
             ie[2]->dst.stride = 2;
-	        ie[2]->dst.offset = tmp_off;
+            ie[2]->dst.offset = tmp_off;
             ie[2]->src0 = ssrc;
             ie[2]->src0.type = DataType::uw;
             ie[2]->src0.stride = 2;
-	        ie[2]->src0.offset = tmp_off;
+            ie[2]->src0.offset = tmp_off;
             ie[2]->src1 = Immediate::uw(0x4 * (ddst.offset % mask_granularity));
-	    } else {
+        } else {
             ie[2]->invalidate();
-	    }
+        }
 
         ie[3]->op = Opcode::bfn;
         ie[3]->ctrl = 0xCA;
@@ -1698,11 +1697,11 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
         ie[3]->dst = ddst;
         ie[3]->dst.type = DataType::uw;
         ie[3]->dst.stride = ssrc.stride;
-        ie[3]->dst.offset = ddst.offset/4;
+        ie[3]->dst.offset = ddst.offset / 4;
         ie[3]->src0 = ddst;
         ie[3]->src0.type = DataType::uw;
         ie[3]->src0.stride = ssrc.stride;
-        ie[3]->src0.offset = ddst.offset/4;
+        ie[3]->src0.offset = ddst.offset / 4;
         ie[3]->src1 = ssrc;
         ie[3]->src1.type = DataType::uw;
         ie[3]->src1.stride = ssrc.stride;
@@ -1712,7 +1711,7 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
         ie[4]->invalidate();
     } else if (simd > 1 && ddst.stride == 1) {
         ie[1]->op = Opcode::shl;
-        ie[1]->simd = simd/2;
+        ie[1]->simd = simd / 2;
         ie[1]->dst = stmp;
         ie[1]->dst.offset += 1;
         ie[1]->dst.stride *= 2;
@@ -1723,7 +1722,7 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
 
         ie[2]->op = Opcode::bfn;
         ie[2]->ctrl = 0xEC;
-        ie[2]->simd = simd/2;
+        ie[2]->simd = simd / 2;
         ie[2]->dst = tmp;
         ie[2]->src0 = stmp;
         ie[2]->src0.stride *= 2;
@@ -1743,7 +1742,7 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
             ie[3]->src0.type = DataType::ub;
 
             ie[4]->op = Opcode::mov;
-            ie[4]->simd = simd/2;
+            ie[4]->simd = simd / 2;
             ie[4]->dst = ddst;
             ie[4]->dst.type = DataType::ub;
             if (ddst.vs != 0)
@@ -1754,7 +1753,7 @@ void CopyPlan::planInt4Downconversion(CopyInstruction &i)
             ie[4]->src0.type = DataType::ub;
         } else {
             ie[3]->op = Opcode::mov;
-            ie[3]->simd = simd/2;
+            ie[3]->simd = simd / 2;
             ie[3]->dst = ddst;
             ie[3]->dst.type = DataType::ub;
             ie[3]->dst.stride = 1;
@@ -2243,8 +2242,8 @@ void CopyPlan::planEmulatedHFToF4(CopyInstruction &i)
     }
 
     if (hw >= HW::XE3P_35_10) {
-        auto t0 = newTemp(DataType::hf, i.simd/2, 1);
-        auto t1 = newTemp(DataType::hf, i.simd/2, 1);
+        auto t0 = newTemp(DataType::hf, i.simd / 2, 1);
+        auto t1 = newTemp(DataType::hf, i.simd / 2, 1);
         auto ie = splitMultiple<5>(i);
         int simd = i.simd;
         int dstStride = y.stride;
@@ -2292,7 +2291,7 @@ void CopyPlan::planEmulatedHFToF4(CopyInstruction &i)
         ie[3]->src0.type = DataType::ub;
         ie[3]->src0.stride = 2;
 
-        if ( needPack ){
+        if (needPack) {
             ie[4]->op = Opcode::mov;
             ie[4]->dst = y;
             ie[4]->dst.type = DataType::u4;
@@ -2300,9 +2299,9 @@ void CopyPlan::planEmulatedHFToF4(CopyInstruction &i)
             ie[4]->src0 = t0;
             ie[4]->src0.type = DataType::u4;
             ie[4]->src0.stride = 1;
-	    } else {
+        } else {
             ie[4]->invalidate();
-	    }
+        }
 
     } else
     {
@@ -2800,7 +2799,7 @@ void CopyPlan::legalizeRegions()
                         repositionDst(i, stride, offset);
                     }
                     continue;
-                } else if (src0BS < dstBS){
+                } else if (src0BS < dstBS) {
                     restrideSrc0(i, dstBS >> getLog2Bytes(s0t));
                     rerun = true;
                 }
@@ -2956,8 +2955,8 @@ void CopyPlan::legalizeImmediateTypes()
                 op->type = DataType::uw;
             else if (one_of(op->type, {DataType::b, DataType::s4}))
                 op->type = DataType::w;
-	    else if (is_xe3p && i.op != Opcode::mov && op->type == DataType::f && i.dst.type == DataType::bf)
-	      legalizeBfImmediate(i);
+	        else if (is_xe3p && i.op != Opcode::mov && op->type == DataType::f && i.dst.type == DataType::bf)
+	            legalizeBfImmediate(i);
         }
     }
     mergeChanges();
@@ -3716,10 +3715,10 @@ void CopyInstruction::dump(const CopyPlan &plan) const
     if (op == Opcode::shfl)
         std::cout << "shfl.idx4";
     else
-    std::cout << getMnemonic(op, HW::Gen9);
+        std::cout << getMnemonic(op, HW::Gen9);
     switch (op) {
-        case Opcode::bfn:  std::cout << ".(" << BFN::nodes[ctrl].str() << ')'; break;
-        case Opcode::math: std::cout << '.' << static_cast<MathFunction>(ctrl);   break;
+        case Opcode::bfn:  std::cout << ".(" << BFN::nodes[ctrl].str() << ')';  break;
+        case Opcode::math: std::cout << '.' << static_cast<MathFunction>(ctrl); break;
         default: break;
     }
 
