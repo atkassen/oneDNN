@@ -2446,6 +2446,7 @@ void CopyPlan::legalizeSIMD(bool initial)
 {
     int grf = GRF::bytes(hw);
     bool splitting = false;
+    bool rerun = false;
 
     auto forceSIMD1 = [&](const CopyInstruction &i) {
         // Workaround for packed byte mov to odd-offset dst.
@@ -2508,13 +2509,23 @@ void CopyPlan::legalizeSIMD(bool initial)
         }
 
         // Fracture instruction into legal SIMD lengths.
-        int simd0 = std::min<int>(rounddown_pow2(i.simd), simdMax);
-
-        bool is_xe3p = one_of(hw, {ngen::HW::XE3P_35_10, ngen::HW::XE3P_35_11, ngen::HW::XE3P_UNKNOWN});
-        if (is_xe3p && simd0 == 2) simd0 = 1;
+        const int simd1 = std::min<int>(rounddown_pow2(i.simd), simdMax);
+        int simd0 = simd1;
 
         if (!initial && forceSIMD1(i))
             simd0 = 1;
+
+        int minSimd0 = 1;
+        for (auto *op : {&i.src0, &i.src1}) {
+            if (op->kind != CopyOperand::GRF) continue;
+            if (op->width)
+                minSimd0 = std::max<int>(op->width, minSimd0);
+        }
+
+        if (simd0 < minSimd0 && minSimd0 < simd1) {
+            rerun = true;
+            simd0 = minSimd0;
+        }
 
         if (simd0 < i.simd || splitting) {
             auto &isplit = split(i, false);
@@ -2571,6 +2582,9 @@ void CopyPlan::legalizeSIMD(bool initial)
         if (i.cnumMin == i.cnumMax)
             i.cnumMin = i.cnumMax += i.cnumSub;
     }
+
+    if (rerun)
+        legalizeSIMD(initial);
 }
 
 // Check if an operand is a legal packed bfloat16 region.
