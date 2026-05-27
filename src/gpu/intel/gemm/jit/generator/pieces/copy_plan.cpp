@@ -997,31 +997,30 @@ bool CopyPlan::planShflUpconvertXe3p(CopyInstruction &i)
 
     auto x = i.src0, y = i.dst;
     bool copySrc = !laneAligned || x.byteOffset() >= 4;
-    bool copyDst = (y.stride != 1 || y.offset != 0);
+    bool copyDst = (y.stride != 1 || y.offset != 0 || i.simd % 32);
 
     if (isInt(dt) && (copySrc || copyDst))
         return false;       /* use normal sequence */
 
-    if (i.simd < 16) return false;
     auto lut = getResource(CopyResource::makeShflLUT(st, dt));
     if (!lut)
         return false;       /* no LUT available */
     lut.type = DataType::ud;
     lut.stride = 0;         /* will be fixed up later */
 
-    int orig_simd  = i.simd;
-    if (copySrc) {
-         i.simd /= 2;
-         i.simd = std::max(16, i.simd);
-    }
-
-    auto ie = splitMultiple<3>(i);
 
     x.offset >>= (_16 ? 1 : 2);
     x.type = (_16 ? DataType::ub : DataType::uw);
 
-    if (copyDst)
+    int orig_simd  = i.simd;
+    if (copyDst) {
+        // Round up SIMD to ensure a valid shfl.
+        i.simd = (i.simd + 0x1F) & ~0x1F;
         y = newTemp(dt, i.simd, 1);
+    }
+
+    i.simd /= 2;
+    auto ie = splitMultiple<3>(i);
 
     if (copySrc) {
         ie[0]->op = Opcode::mov;
@@ -1030,7 +1029,8 @@ bool CopyPlan::planShflUpconvertXe3p(CopyInstruction &i)
         x.type = (_16 ? DataType::ub : DataType::uw);
         x.stride = (_16 ? 4 : 2);
         ie[0]->dst = x;
-    }
+    } else
+        ie[0]->invalidate();
 
     ie[1]->op = Opcode::shfl;
     ie[1]->dst = y;
