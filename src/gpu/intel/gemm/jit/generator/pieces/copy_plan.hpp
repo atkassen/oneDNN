@@ -83,17 +83,35 @@ struct CopyOperand
 #endif
 };
 
+struct CopyRange {
+    int start = 0x7FFFFFFF, end = -1;
+
+    constexpr bool operator<(const CopyRange &r) const {
+        return (start < r.start) || (start == r.start && end < r.end);
+    }
+
+    constexpr bool operator==(const CopyRange &r) const {
+        return start == r.start && end == r.end;
+    }
+
+    constexpr operator bool() const { return start <= end; }
+
+    std::string str() const {
+        if (!*this) return "(nil)";
+        return "[" + std::to_string(start) + ", " + std::to_string(end) + "]";
+    }
+};
+
 struct CopyInstruction
 {
     ngen::Opcode op;
     uint8_t ctrl;
     int simd = 0;
-    int16_t cnumMin, cnumMax;
     uint16_t phase = 0, spread = 0;
     CopyOperand dst, src0, src1, src2, flag;
     ngen::ConditionModifier cmod = ngen::ConditionModifier::none;
     bool atomic = false, sat = false;
-    int16_t cnumSub = 0;
+    CopyRange range;
 
     void invalidate()       { simd = 0; }
     bool isInvalid()  const { return (simd == 0); }
@@ -122,10 +140,9 @@ struct CopyTemporary
 
     int bytes = 0, align = 0, offset = 0;
     bool flag = false;
-    int16_t cnumMin = 0x7FFF;
-    int16_t cnumMax = -1;
     uint16_t phaseMin = 0xFFFF;
     int assignment = -1;
+    CopyRange range;
 
     explicit CopyTemporary(int bytes_, int align_, int offset_ = 0)
             : bytes(bytes_), align(align_), offset(offset_) {}
@@ -134,8 +151,8 @@ struct CopyTemporary
 
 protected:
     void usedBy(const CopyInstruction &i) {
-        cnumMin = std::min(cnumMin, i.cnumMin);
-        cnumMax = std::max(cnumMax, i.cnumMax);
+        range.start = std::min(range.start, i.range.start);
+        range.end = std::max(range.end, i.range.end);
         phaseMin = std::min(phaseMin, i.phase);
     }
 
@@ -231,8 +248,8 @@ protected:
     void repositionDst(CopyInstruction &i, int stride, int offset);
 
     void checkNoSubbytes();
-    void collapseCNums();
-    bool trySwapCNumRanges(int16_t min0, int16_t max0, int16_t min1);
+    void collapseRanges();
+    bool trySwapRanges(const CopyRange &range, int start);
 
     void distributePhases();
     void split2DRegions();
