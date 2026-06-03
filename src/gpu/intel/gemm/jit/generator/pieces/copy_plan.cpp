@@ -300,7 +300,8 @@ void CopyPlan::transform()
 CopyInstruction &CopyPlan::append(CopyInstruction &&i)
 {
     auto offset = insns.empty() ? 0 : insns.back().range.end + 1;
-    i.range = {offset, offset + i.simd - 1};
+    i.range.start = offset;
+    i.range.end = offset + i.simd - 1;
     insns.push_back(std::move(i));
     return insns.back();
 }
@@ -3491,7 +3492,7 @@ void CopyPlan::materializeTemps(const GRFAllocator &grfAllocator, const FlagAllo
 {
     std::vector<CopyInstruction> sortedInsns;
     AllocationManager manager(hw, grfAllocator, flagAllocator);
-    uint16_t minPhaseTemp = 0xFFFF, maxPhaseTemp = 0xFFFF;
+    uint16_t minPhaseTemp = 0xFFFF, maxPhaseTemp = 0x0;
 
     sortedInsns.reserve(insns.size());
     manager.reserve(temps.size());
@@ -3505,9 +3506,22 @@ void CopyPlan::materializeTemps(const GRFAllocator &grfAllocator, const FlagAllo
         }
         if (haveTemp) {
             minPhaseTemp = std::min(minPhaseTemp, i.phase);
-            maxPhaseTemp = i.phase;
+            maxPhaseTemp = std::max(maxPhaseTemp, i.phase);
         }
     }
+
+    auto emit = [&](const CopyRange &range, uint16_t minPhase, uint16_t maxPhase) {
+        bool emitted = false;
+        for (const auto &i: insns)
+            if (i.range.start >= range.start && i.range.end <= range.end && i.phase >= minPhase && i.phase <= maxPhase) {
+                sortedInsns.push_back(i);
+                emitted = true;
+            }
+        return emitted;
+    };
+
+    // No temporaries used
+    if (minPhaseTemp > maxPhaseTemp) return;
 
     /* Check which instruction groups must be issued together */
     auto groupInstructions = [&](std::vector<bool> &joined, CopyRange &range) {
@@ -3540,16 +3554,6 @@ void CopyPlan::materializeTemps(const GRFAllocator &grfAllocator, const FlagAllo
     rangeOrder.reserve(temps.size());
     std::iota(rangeOrder.begin(), rangeOrder.end(), 0);
     std::sort(rangeOrder.begin(), rangeOrder.end(), cmp);
-
-    auto emit = [&](const CopyRange &range, uint16_t minPhase, uint16_t maxPhase) {
-        bool emitted = false;
-        for (const auto &i: insns)
-            if (i.range.start >= range.start && i.range.end <= range.end && i.phase >= minPhase && i.phase <= maxPhase) {
-                sortedInsns.push_back(i);
-                emitted = true;
-            }
-        return emitted;
-    };
 
     /* Issue instructions up to first temporary */
     if (minPhaseTemp > 0x0000)
