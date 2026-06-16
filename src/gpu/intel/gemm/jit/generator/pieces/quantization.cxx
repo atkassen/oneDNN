@@ -440,98 +440,11 @@ void Generator<hw>::gemmDequantizeOperation(bool doA, Type T, Type Tq, BinaryOp 
     safeReleaseRanges(qPairs, state);
 }
 
-// Shift s4 data by 8 to transfrom it into u4 data.
-template <HW hw>
-void Generator<hw>::dequantizeInt4Shift(Type Tsrc, GRFMultirange src, const CommonStrategy &strategy)
-{
-    if (Tsrc != Type::s4) return;
-    map(hw, Type::u16, src, src, strategy, [&](int esize, RegData r, RegData _) {
-        xor_(esize, r, r, 0x8888);
-    });
-}
-
-// Optimized int4 -> f16/bf16/f32 dequantization sequence.
-template <HW hw>
-void Generator<hw>::dequantizeInt4(bool doA, const RegisterLayout &layoutSrc, const RegisterLayout &layoutDst,
-                                   const RegisterLayout &layoutOffset, const RegisterLayout &layoutScale,
-                                   const GRFMultirange &src, const GRFMultirange &dst, const GRFMultirange &offset, const GRFMultirange &scale,
-                                   int offR, int offC, int h, int kab_load, int kq_load,
-                                   const GEMMProblem *problem, const CommonStrategy &strategy, CommonState &state, bool s4Shift)
-{
-    auto Tsrc = layoutSrc.type(), Tdst = layoutDst.type();
-    if (!canDequantizeInt4(layoutSrc, layoutDst, layoutOffset, layoutScale))
-        stub("Cannot perform dequantizeInt4");
-
-    bool s4 = Tsrc.isSigned();
-    bool f32 = (Tdst == Type::f32);
-    bool bf16 = (Tdst == Type::bf16);
-
-    RegisterLayout layoutDstF16;
-    const RegisterLayout *effLayoutDst = &layoutDst;
-    GRFMultirange dstF16;
-    const GRFMultirange *effDst = &dst;
-    if (f32 || bf16) {
-        layoutDstF16 = RegisterLayout(hw, Type::f16, layoutSrc.rows(), layoutSrc.cols(), layoutDst.colMajor(), layoutDst.crosspack(), 0, 0, (hw < HW::XeHP));
-        for (auto &block: layoutDstF16) {
-            block.offsetR += layoutDst[0].offsetR;
-            block.offsetC += layoutDst[0].offsetC;
-        }
-        dstF16 = chunkAlloc(layoutDstF16.regs(), 2, state);
-        effLayoutDst = &layoutDstF16;
-        effDst = &dstF16;
-    }
-
-    // 1) Shift s4 data to u4 data by adding 8.
-    if (s4 && s4Shift)
-        dequantizeInt4Shift(Tsrc, src, strategy);
-
-    // 2) Copy u4 -> u16 data.
-    copyRegisters(Type::u4, Type::u16, layoutSrc, *effLayoutDst, src, *effDst, offR, offC, false, strategy, state);
-
-    // 3) Reinterpret u16 data as denormal f16, scale into normal range and subtract (rescaled) offsets if available.
-    //     The required rescaling factor (2^24) is necessarily outside f16 range,
-    //     so two multiplications are needed.
-    if (!layoutOffset.empty()) {
-        if (!problem) stub();
-        gemmDequantizeOperation(doA, Type::f16, Type::f16, BinaryOp::ScaleSub, *effLayoutDst, layoutOffset, *effDst, offset, h, kab_load, kq_load, *problem, strategy, state);
-    } else {
-        map(hw, Type::f16, *effDst, *effLayoutDst, strategy, [&](int esize, RegData r) {
-            s4 ? mad(esize, r, Immediate::hf(0x9800), r, Immediate::hf(0x6C00)) /* 0x9800 = -8*2^(-12), 0x6C00 = 2^12 */
-               : mul(esize, r, r, Immediate::hf(0x6C00));
-        });
-    }
-
-    // 4) Finish rescaling -- remaining factor is 2^12.
-    map(hw, Type::f16, *effDst, *effLayoutDst, strategy, [&](int esize, RegData r) {
-        mul(esize, r, r, Immediate::hf(0x6C00));
-    });
-
-    // 5) Apply scales if present. If the scales are not too large (absolute value < 128),
-    //      this could be merged into the previous multiplication.
-    if (!f32 && !layoutScale.empty()) {
-        if (!problem) stub();
-        gemmDequantizeOperation(doA, Type::f16, Type::f16, BinaryOp::Mul, *effLayoutDst, layoutScale, *effDst, scale, h, kab_load, kq_load, *problem, strategy, state);
-    }
-
-    // 6) Convert to dst type if needed.
-    if (f32 || bf16) {
-        copyRegisters(Type::f16, Tdst, layoutDstF16, layoutDst, dstF16, dst, offR, offC, false, strategy, state);
-        safeReleaseRanges(dstF16, state);
-    }
-
-    // 7) Apply scales for f32 after f16->f32 upconversion.
-    if (f32 && !layoutScale.empty()) {
-        if (!problem) stub();
-        gemmDequantizeOperation(doA, Type::f32, Type::f32, BinaryOp::Mul, layoutDst, layoutScale, dst, scale, h, kab_load, kq_load, *problem, strategy, state);
-    }
-}
-
 // Dequantize A/B, given 2D grouped quantization data.
 template <HW hw>
 void Generator<hw>::gemmDequantizeAB(bool doA, const RegisterLayout &layoutSrc, const RegisterLayout &layoutDst0,
                                      const GRFMultirange &src, const GRFMultirange &dst0, int h, int kab_load, int kab_repack, int kq_load,
-                                     const GEMMProblem &problem, const GEMMStrategy &strategy, GEMMState &state,
-                                     bool s4Shift)
+                                     const GEMMProblem &problem, const GEMMStrategy &strategy, GEMMState &state)
 {
     auto Tsrc = layoutSrc.type(), Tdst = layoutDst0.type();
     auto Txo_int     = doA ? state.Tao_int             : state.Tbo_int;
@@ -578,30 +491,21 @@ void Generator<hw>::gemmDequantizeAB(bool doA, const RegisterLayout &layoutSrc, 
         offR = offC = 0;
     }
 
-    if (canDequantizeInt4(layoutSrc, layoutDst, oLayout, sLayout)) {
-        dequantizeInt4(doA, layoutSrc, layoutDst, oLayout, sLayout,
-                       src, dst, oRegs, sRegs, offR, offC, h, kab_load, kq_load, &problem,
-                       strategy, state, s4Shift);
-    } else {
-        if (copy)
-            copyRegisters(Tsrc, Tx_int, layoutSrc, layoutDst, src, dst, offR, offC, false, strategy, state);
-        else if (Tsrc.asSigned() != Tx_int.asSigned())
-            convert(src, Tsrc, Tx_int, strategy, state);
+    if (copy)
+        copyRegisters(Tsrc, Tx_int, layoutSrc, layoutDst, src, dst, offR, offC, false, strategy, state);
+    else if (Tsrc.asSigned() != Tx_int.asSigned())
+        convert(src, Tsrc, Tx_int, strategy, state);
 
-        if (xo2D) {
-            if (!state.useBDPAS)
-            {
+    if (xo2D)
+        if (!state.useBDPAS) {
             gemmDequantizeOperation(doA, Tx_int, Txo_int, BinaryOp::Sub, layoutDst, oLayout, dst, oRegs, h, kab_load, kq_load, problem, strategy, state);
             convert(dst, Tx_int, Tdst, strategy, state);
-            }
         }
 
-        if (xs2D)
-            if (!state.useBDPAS)
-            {
+    if (xs2D)
+        if (!state.useBDPAS) {
             gemmDequantizeOperation(doA, Tdst, Txs_int, BinaryOp::Mul, layoutDst, sLayout, dst, sRegs, h, kab_load, kq_load, problem, strategy, state);
-	    }
-    }
+        }
 
     if (ms < md || ns < nd) {
         copyRegisters(Tdst, Tdst, layoutDst, layoutDst0, dst, dst0, offR0, offC0, false, strategy, state);

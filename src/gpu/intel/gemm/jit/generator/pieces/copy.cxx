@@ -45,9 +45,9 @@ void Generator<hw>::copyRegisterBlock(Type Ts, Type Td, const RegisterBlock &blo
 template <HW hw>
 void Generator<hw>::copyRegisters(const RegisterLayout &layoutSrc, const RegisterLayout &layoutDst,
                                   const GRFMultirange &src, const GRFMultirange &dst,
-                                  const CommonStrategy &strategy, CommonState &state, bool preserveSrc, bool s4Shift)
+                                  const CommonStrategy &strategy, CommonState &state, bool preserveSrc)
 {
-    copyRegisters(layoutSrc.type(), layoutDst.type(), layoutSrc, layoutDst, src, dst, 0, 0, false, strategy, state, preserveSrc, s4Shift);
+    copyRegisters(layoutSrc.type(), layoutDst.type(), layoutSrc, layoutDst, src, dst, 0, 0, false, strategy, state, preserveSrc);
 }
 
 // Register-to-register copy, with no type-punning or scaling.
@@ -55,19 +55,19 @@ template <HW hw>
 void Generator<hw>::copyRegisters(const RegisterLayout &layoutSrc, const RegisterLayout &layoutDst,
                                   const GRFMultirange &src, const GRFMultirange &dst,
                                   int dOffR, int dOffC, bool conjugate,
-                                  const CommonStrategy &strategy, CommonState &state, bool preserveSrc, bool s4Shift)
+                                  const CommonStrategy &strategy, CommonState &state, bool preserveSrc)
 {
     copyRegisters(layoutSrc.type(), layoutDst.type(), layoutSrc, layoutDst, src, dst, dOffR, dOffC, Scalar{1},
-                  SubregisterPair(), SubregisterPair(), conjugate, strategy, state, preserveSrc, s4Shift);
+                  SubregisterPair(), SubregisterPair(), conjugate, strategy, state, preserveSrc);
 }
 
 // Register-to-register copy, with no scaling.
 template <HW hw>
 void Generator<hw>::copyRegisters(Type Ts, Type Td, const RegisterLayout &layoutSrc, const RegisterLayout &layoutDst,
                                   const GRFMultirange &src, const GRFMultirange &dst,
-                                  const CommonStrategy &strategy, CommonState &state, bool preserveSrc, bool s4Shift)
+                                  const CommonStrategy &strategy, CommonState &state, bool preserveSrc)
 {
-    copyRegisters(Ts, Td, layoutSrc, layoutDst, src, dst, 0, 0, false, strategy, state, preserveSrc, s4Shift);
+    copyRegisters(Ts, Td, layoutSrc, layoutDst, src, dst, 0, 0, false, strategy, state, preserveSrc);
 }
 
 // Register-to-register copy, with no scaling.
@@ -75,10 +75,10 @@ template <HW hw>
 void Generator<hw>::copyRegisters(Type Ts, Type Td, const RegisterLayout &layoutSrc, const RegisterLayout &layoutDst,
                                   const GRFMultirange &src, const GRFMultirange &dst,
                                   int dOffR, int dOffC, bool conjugate,
-                                  const CommonStrategy &strategy, CommonState &state, bool preserveSrc, bool s4Shift)
+                                  const CommonStrategy &strategy, CommonState &state, bool preserveSrc)
 {
     copyRegisters(Ts, Td, layoutSrc, layoutDst, src, dst, dOffR, dOffC, Scalar{1},
-                  SubregisterPair(), SubregisterPair(), conjugate, strategy, state, preserveSrc, s4Shift);
+                  SubregisterPair(), SubregisterPair(), conjugate, strategy, state, preserveSrc);
 }
 
 // Register-to-register copy, with scaling.
@@ -86,23 +86,9 @@ template <HW hw>
 void Generator<hw>::copyRegisters(Type Ts, Type Td, const RegisterLayout &layoutSrc, const RegisterLayout &layoutDst,
                                   const GRFMultirange &src, const GRFMultirange &dst,
                                   int dOffR, int dOffC, const Scalar &alpha, const SubregisterPair &alpha_real, const SubregisterPair &alpha_imag,
-                                  bool conjugate, const CommonStrategy &strategy, CommonState &state, bool preserveSrc, bool s4Shift)
+                                  bool conjugate, const CommonStrategy &strategy, CommonState &state, bool preserveSrc)
 {
     auto ned = elementsPerGRF(hw, Td.real());
-
-    // Special s4 upconversion path for pre-shifted data.
-    bool preshiftedS4 = (Ts == Type::s4 && !s4Shift);
-    if (alpha == 1 && !conjugate && !preserveSrc && preshiftedS4) {
-        RegisterLayout emptyLayout;
-        GRFMultirange emptyRegs;
-        if (Ts != layoutSrc.type() || Td != layoutDst.type()) stub("No type punning allowed on this path");
-        if (canDequantizeInt4(layoutSrc, layoutDst, emptyLayout, emptyLayout)) {
-            dequantizeInt4(true, layoutSrc, layoutDst, emptyLayout, emptyLayout,
-                           src, dst, emptyRegs, emptyRegs, dOffR, dOffC, 0, 1, 1, nullptr, strategy, state, s4Shift);
-            return;
-        }
-    }
-    if (preshiftedS4) stub("Pre-shifted s4 data not supported on this path");
 
     // Check layouts.
     bool sCM = layoutSrc.colMajor();

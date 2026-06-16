@@ -961,14 +961,6 @@ void Generator<hw>::kLoop(KLoop type, const GEMMProblem &problem, GEMMStrategy &
                 for (auto &l: Ar_sublayout)
                      l.offsetC += ha;
             }
-
-            // Int4 data is commonly expanded from partial registers as a 64
-            // byte register expands to 128 elements. To avoid emitting extra
-            // instructions, perform element-wise operations here.
-            if (canDequantizeInt4(layout, state.Ar_layout, {}, {})) {
-                if (ha == 0) dequantizeInt4Shift(Ta_load, regs, strategy);
-                s4Shift = false;
-            }
         }
         if (dequantizeA)
             gemmDequantizeAB(true, sublayout, Ar_sublayout, regs, state.Ar_regs, h, k_load, k_repack, kaq_load, problem, strategy, state, s4Shift);
