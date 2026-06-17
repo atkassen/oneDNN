@@ -23,7 +23,6 @@
 #include "loop_sequencer.hpp"
 #include "remask.hpp"
 #include "state_utils.hpp"
-#include "quantization.hpp"
 
 GEMMSTONE_NAMESPACE_START
 

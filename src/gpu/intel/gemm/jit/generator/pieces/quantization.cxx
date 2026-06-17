@@ -21,7 +21,6 @@
 #include "layout_utils.hpp"
 #include "map.hpp"
 #include "ngen_object_helpers.hpp"
-#include "quantization.hpp"
 
 GEMMSTONE_NAMESPACE_START
 
