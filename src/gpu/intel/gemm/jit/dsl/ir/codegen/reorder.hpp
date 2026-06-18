@@ -50,7 +50,7 @@ struct copy_plan_t : gemmstone::CopyPlan {
     using gemmstone::CopyPlan::newTemp;
 
     copy_plan_t(reg_allocator_t &ra, bool systolic_support)
-        : CopyPlan(ra.hardware(), systolic_support), ra_(ra) {}
+        : CopyPlan(ra.product(), systolic_support), ra_(ra) {}
 
     ngen::HW hw() const { return CopyPlan::hw; }
 

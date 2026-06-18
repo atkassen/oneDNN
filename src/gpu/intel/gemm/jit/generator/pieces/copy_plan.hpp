@@ -205,7 +205,7 @@ public:
     using GRFAllocator = std::function<void(int count, ngen::GRFRange &range)>;
     using FlagAllocator = std::function<void(int bytes, ngen::FlagRegister &flag)>;
 
-    CopyPlan(ngen::HW hw_, bool systolicAvailable_) : hw(hw_), systolicAvailable(systolicAvailable_) {}
+    CopyPlan(ngen::Product product, bool systolicAvailable_) : product(product), hw(ngen::getCore(product.family)), systolicAvailable(systolicAvailable_) {}
 
     CopyInstruction &append(CopyInstruction &&i);
     CopyInstruction &append(ngen::Opcode op, int simd, const CopyOperand &dst, const CopyOperand &src0, const CopyOperand &src1 = CopyOperand(), const CopyOperand &src2 = CopyOperand());
@@ -231,6 +231,7 @@ public:
 #endif
 
 protected:
+    ngen::Product product;
     ngen::HW hw;
     bool systolicAvailable;
     bool freezeRange = false;
