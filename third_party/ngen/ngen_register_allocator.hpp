@@ -132,9 +132,10 @@ private:
 // Gen register allocator.
 class RegisterAllocator {
 public:
-    explicit RegisterAllocator(HW hw_) : hw(hw_) { init(); }
+    explicit RegisterAllocator(Product product) : product_(product) { init(); }
 
-    HW hardware() const { return hw; }
+    Product product() const { return product_; }
+    HW hardware() const { return getCore(product_.family); }
 
     // Allocation functions: sub-GRFs, full GRFs, and GRF ranges.
     inline GRFRange allocRange(int nregs, Bundle baseBundle = Bundle(),
@@ -214,7 +215,7 @@ protected:
 
     using mtype = uint16_t;
 
-    HW hw;                                      // HW generation.
+    Product product_;                            // HW product.
     uint8_t freeGRF[GRF::maxRegs() / 8]{};      // Bitmap of free whole GRFs.
     mtype freeSub[GRF::maxRegs()]{};            // Bitmap of free partial GRFs, at dword granularity.
     uint16_t regCount;                          // # of registers.
@@ -370,15 +371,15 @@ Bundle Bundle::locate(HW hw, RegData reg)
 
 void RegisterAllocator::init()
 {
-    const int maxRegs = GRF::maxRegs(hw);
+    const int maxRegs = GRF::maxRegs(hardware());
 
-    fullSubMask = (GRF::bytes(hw) == 32) ? 0xFF : 0xFFFF;
+    fullSubMask = (GRF::bytes(hardware()) == 32) ? 0xFF : 0xFFFF;
     for (int r = 0; r < maxRegs; r++)
         freeSub[r] = fullSubMask;
     for (int rr = 0; rr < (maxRegs >> 3); rr++)
         freeGRF[rr] = 0xFF;
 
-    freeFlag = (1u << FlagRegister::subcount(hw)) - 1;
+    freeFlag = (1u << FlagRegister::subcount(hardware())) - 1;
     regCount = maxRegs;
 }
 
@@ -512,7 +513,7 @@ bool RegisterAllocator::isFree(Subregister subreg) const
 
 GRFRange RegisterAllocator::allocRange(int nregs, Bundle baseBundle, BundleGroup bundleMask)
 {
-    return allocRange(nregs, BundleGroup(hw) | baseBundle, bundleMask);
+    return allocRange(nregs, BundleGroup(hardware()) | baseBundle, bundleMask);
 }
 
 GRFRange RegisterAllocator::allocRange(int nregs, BundleGroup baseBundle, BundleGroup bundleMask)
@@ -541,7 +542,7 @@ FlagRegister RegisterAllocator::allocFlag(bool sub)
 
 GRFRange RegisterAllocator::tryAllocRange(int nregs, Bundle baseBundle, BundleGroup bundleMask)
 {
-    return tryAllocRange(nregs, BundleGroup(hw) | baseBundle, bundleMask);
+    return tryAllocRange(nregs, BundleGroup(hardware()) | baseBundle, bundleMask);
 }
 
 // Allocate a contiguous range of GRFs. baseBundle restricts the choice of first GRF, while bundleMask
@@ -629,7 +630,7 @@ Subregister RegisterAllocator::tryAllocSub(DataType type, Bundle bundle)
 
         for (int rchunk = 0; rchunk < (GRF::maxRegs() >> 6); rchunk++) {
             uint64_t free = searchFullGRF ? freeGRF64[rchunk] : -1;
-            free &= bundle.regMask(hw, rchunk);
+            free &= bundle.regMask(hardware(), rchunk);
 
             while (free) {
                 int rr = utils::bsf(free);
@@ -677,7 +678,7 @@ FlagRegister RegisterAllocator::tryAllocFlag(bool sub)
 
         return FlagRegister::createFromIndex(idx);
     }
-    for (int r = 0; r < FlagRegister::count(hw); r++) {
+    for (int r = 0; r < FlagRegister::count(hardware()); r++) {
         decltype(freeFlag) mask = (0b11 << 2 * r);
         if ((freeFlag & mask) == mask) {
             freeFlag &= ~mask;
@@ -691,7 +692,7 @@ FlagRegister RegisterAllocator::tryAllocFlag(bool sub)
 void RegisterAllocator::dump(std::ostream &str)
 {
     str << "\nFlag registers: ";
-    for (int r = 0; r < FlagRegister::subcount(hw); r++)
+    for (int r = 0; r < FlagRegister::subcount(hardware()); r++)
         str << char((freeFlag & (1 << r)) ? '.' : 'x');
 
     for (int r = 0; r < regCount; r++) {
@@ -717,7 +718,7 @@ void RegisterAllocator::dump(std::ostream &str)
             str << "Inconsistent bitmaps at r" << r << std::endl;
         if (freeSub[r] != 0x00 && freeSub[r] != fullSubMask) {
             str << " r" << std::setw(3) << r << "   ";
-            for (int s = 0; s < (GRF::bytes(hw) >> 2); s++)
+            for (int s = 0; s < (GRF::bytes(hardware()) >> 2); s++)
                 str << char((freeSub[r] & (1 << s)) ? '.' : 'x');
             str << std::endl;
         }
