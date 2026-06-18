@@ -2761,6 +2761,8 @@ void CopyPlan::legalizeRegions()
                 } else
                     canSwizzle = false;
             }
+
+            if (hfIntConvert && !relaxHFIntAlignment()) canSwizzle = false;
         }
 
         if (!canSwizzle) {

@@ -312,6 +312,11 @@ protected:
     CopyOperand zipImmediates(const CopyOperand &o1, const CopyOperand &o2);
 
     bool bfArithmeticOK(const CopyInstruction &i) const;
+
+private:
+    bool relaxHFIntAlignment() const {
+        return (hw != ngen::HW::Xe3p) || (product.family < ngen::ProductFamily::CRI);
+    }
 };
 
 
