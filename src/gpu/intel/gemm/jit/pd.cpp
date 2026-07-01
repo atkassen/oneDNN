@@ -98,6 +98,7 @@ status_t pd_t::init_post_ops(impl::engine_t *engine) {
                 sum_at_begin_ = (i == 0);
                 binary_srcs_.push_back(binary_src_t {binary_src_t::none, 0});
                 beta_ = e.sum.scale;
+                ok &= (e.sum.zero_point == 0);
                 break;
             case eltwise:
                 ok &= eltwise_injector_f32_is_supported(e.eltwise.alg);
