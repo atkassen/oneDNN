@@ -159,7 +159,9 @@ RegData CopyOperand::ngen() const
 {
     if (kind == Null)
         return ngen::NullRegister().sub(offset, type)(stride);
-    if (kind != GRF || temp) stub("Invalid operation");
+    if (temp) stub("Invalid operation");
+    if (kind == Flag) return ngenFlag();
+    if (kind != GRF) stub("Invalid operation");
 
     auto sub = ngen::GRF(grf).sub(offset, type);
     RegData rd;
@@ -250,6 +252,7 @@ void CopyPlan::transform()
 
     sort(SortType::Register);
 
+    optimizeSIMD();
     optimizeIntegerDownconvert();
     optimizeZip();
     optimizeZipAdjacent();
@@ -2964,6 +2967,98 @@ void CopyPlan::sort(SortType type)
     std::stable_sort(insns.begin(), insns.end(), [=](const CopyInstruction &i1, const CopyInstruction &i2) {
         return sortOrder(i1) < sortOrder(i2);
     });
+}
+
+// Optimization pass: extend SIMD widths to avoid many small-SIMD instructions
+// Example input:
+//    mov (15)  r0.0<4>:uw   r10.0<2>:uw
+// i.e.,
+//    mov (8)  r0.0<4>:uw   r10.0<2>:uw
+//    mov (4)  r1.0<4>:uw   r10.16<2>:uw
+//    mov (2)  r1.16<4>:uw   r10.24<2>:uw
+//    mov (1)  r1.24<4>:uw   r10.28<2>:uw
+// Output:
+//    mov (1)  f0.0:uw    0x7FFF
+//    (f0.0) mov (16) r0.0<2>:uw   r10.0<1>:uw
+//
+void CopyPlan::optimizeSIMD()
+{
+    const auto grf = ngen::GRF::bytes(hw);
+
+    auto advance = [grf](CopyOperand &op, int n) {
+        if (op.kind == CopyOperand::Flag)
+            op.offset += n;
+        if (op.kind != CopyOperand::GRF) return;
+        int ne = bytesToElements(grf, op.type);
+        if (op.width) {
+            op.offset += (n / op.width) * op.vs;
+            n %= op.width;
+        }
+        op.offset += n * op.stride;
+        int grfOffset = op.offset / ne;
+        op.grf += grfOffset;
+        op.offset -= grfOffset * ne;
+    };
+
+    for (auto &i : insns) {
+        auto tail = i.simd % 32;
+        if (tail == rounddown_pow2(tail)) continue;
+        auto simd0 = i.simd - tail;
+
+        auto &i0 = i, &i1 = split(i, false);
+        i0.simd = simd0;
+        advance(i1.dst, simd0);
+        advance(i1.src0, simd0);
+        advance(i1.src1, simd0);
+        advance(i1.src2, simd0);
+        i1.simd = tail;
+    }
+
+    mergeChanges();
+
+    for (auto &i : insns) {
+        auto simd = i.simd;
+        if (simd >= 32 || rounddown_pow2(simd) == simd) continue;
+        auto hasConversion = (i.op != Opcode::mov) || (i.dst.type != i.src0.type);
+        auto esimd = 2 * rounddown_pow2(simd);
+        auto dst = i.dst;
+        auto tmp = i.src0;
+        i.simd = esimd;
+        i.range.end = i.range.start + esimd - 1;
+
+        auto ie = splitMultiple<3>(i);
+
+        if (hasConversion) {
+            tmp = newTemp(dst.type, esimd, dst.stride, 0, dst.offset);
+            ie[0]->dst = tmp;
+        } else
+            ie[0]->invalidate();
+
+        auto flag = newFlag(esimd);
+        auto flagValue = (1u << simd) - 1;
+        ie[1]->simd = 1;
+        ie[1]->dst = flag;
+        ie[1]->dst.type = (simd > 16) ? DataType::ud : DataType::uw;
+        if (i.flag) {
+            ie[1]->op = Opcode::or_;
+            ie[1]->src0 = i.flag;
+            ie[1]->src1 = flagValue;
+            ie[1]->flag = ie[1]->src2 = CopyOperand{};
+        } else {
+            ie[1]->op = Opcode::mov;
+            ie[1]->src0 = flagValue;
+            ie[1]->src1 = ie[1]->src2 = CopyOperand{};
+        }
+        ie[1]->cmod = ConditionModifier::none;
+
+        ie[2]->simd = esimd;
+        ie[2]->op = Opcode::mov;
+        ie[2]->flag = flag;
+        ie[2]->dst = dst;
+        ie[2]->src0 = tmp;
+    }
+
+    mergeChanges();
 }
 
 // Optimization pass: zip together interleaved operations.
