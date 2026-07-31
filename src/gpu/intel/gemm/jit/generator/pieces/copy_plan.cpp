@@ -3624,21 +3624,28 @@ void CopyPlan::materializeTemps(const GRFAllocator &grfAllocator, const FlagAllo
             }
         }
 
-        /* Back off to the nearest instruction group boundary */
+        /* Back off to the nearest instruction group boundary. If no boundary
+           can be found (some instruction's range spans clear across the
+           remaining region), advance the phase window past already-emitted
+           phases and retry -- this may unjoin the region by excluding
+           instructions that no longer need to be considered -- until a
+           boundary is found or no further progress is possible. */
         while (range.end >= range.start && joined[range.end])
             range.end--;
-        if (range.end < range.start) {
+        while (range.end < range.start && order != end) {
             bool emitted = false;
-            if (order != end) {
-                auto &temp = temps[*order];
-                if (temp.phaseMin > minPhaseTemp) {
-                    emitted = emit(range0, minPhaseTemp, temp.phaseMin - 1);
-                    minPhaseTemp = temp.phaseMin;
-                }
+            auto &temp = temps[*order];
+            if (temp.phaseMin > minPhaseTemp) {
+                emitted = emit(range0, minPhaseTemp, temp.phaseMin - 1);
+                minPhaseTemp = temp.phaseMin;
             }
             if (!emitted)
                 throw out_of_registers_exception();
-            groupInstructions(joined, range);
+            CopyRange unused;
+            groupInstructions(joined, unused);
+            range.end = temp.range.start - 1;
+            while (range.end >= range.start && joined[range.end])
+                range.end--;
         }
 
         /* Issue instructions for this batch of instruction groups */
