@@ -20,6 +20,7 @@
 
 #include "xpu/ocl/usm_memory_storage.hpp"
 #include "xpu/ocl/usm_utils.hpp"
+#include "xpu/usm_utils.hpp"
 
 namespace dnnl {
 namespace impl {
@@ -45,9 +46,12 @@ status_t usm_memory_storage_t::map_data(
 
     void *host_ptr = usm::malloc_host(stream->engine(), size);
     if (!host_ptr) return status::out_of_memory;
+    xpu::usm::unpoison(host_ptr, size);
 
-    auto leak_guard = decltype(usm_ptr_)(
-            host_ptr, [this](void *p) { usm::free(engine(), p); });
+    auto leak_guard = decltype(usm_ptr_)(host_ptr, [this, size](void *p) {
+        usm::free(engine(), p);
+        xpu::usm::poison(p, size);
+    });
     CHECK(usm::memcpy(stream, host_ptr, usm_ptr(), size, 0, nullptr, nullptr));
     CHECK(stream->wait());
     leak_guard.release();
@@ -59,6 +63,7 @@ status_t usm_memory_storage_t::map_data(
                 nullptr, nullptr));
         CHECK(stream->wait());
         usm::free(stream->engine(), mapped_ptr);
+        xpu::usm::poison(mapped_ptr, size);
         return status::success;
     };
 

@@ -15,6 +15,7 @@
 *******************************************************************************/
 
 #include "xpu/sycl/usm_memory_storage.hpp"
+#include "xpu/usm_utils.hpp"
 
 #include "common/memory.hpp"
 #include "common/memory_map_manager.hpp"
@@ -64,6 +65,7 @@ status_t usm_memory_storage_t::map_data(
     if (!host_ptr) return status::out_of_memory;
 
     sycl_queue.wait_and_throw();
+    xpu::usm::unpoison(host_ptr, size);
     sycl_queue.memcpy(host_ptr, usm_ptr, size).wait();
 
     *mapped_ptr = host_ptr;
@@ -74,6 +76,7 @@ status_t usm_memory_storage_t::map_data(
         sycl_queue.wait_and_throw();
         sycl_queue.memcpy(usm_ptr, mapped_ptr, size).wait();
         ::sycl::free(mapped_ptr, sycl_queue.get_context());
+        xpu::usm::poison(mapped_ptr, size);
         return status::success;
     };
 
