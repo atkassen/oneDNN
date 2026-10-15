@@ -3360,9 +3360,7 @@ void CopyPlan::optimizeSIMD()
 
     mergeChanges();
 
-    auto mask = [&](CopyInstruction &i, const CopyOperand &flag, bool wa) {
-        const auto esimd = 2 * rounddown_pow2(i.simd);
-
+    auto mask = [&](CopyInstruction &i, const CopyOperand &flag, int esimd, bool wa) {
         auto ie = splitMultiple<5>(i);
         auto &i0 = *ie[0], &i2 = *ie[4];
 
@@ -3443,7 +3441,7 @@ void CopyPlan::optimizeSIMD()
         flag.type = esimd > 16 ? DataType::ud : DataType::uw;
         rerange(i1, esimd);
 
-        auto &fi = *mask(i1, flag, byteDstWA);
+        auto &fi = *mask(i1, flag, esimd, byteDstWA);
 
         fi.simd = 1;
         fi.range = range;
@@ -3463,7 +3461,7 @@ void CopyPlan::optimizeSIMD()
         for (size_t n = n1 + 1; n < n2; ++n, ++n1) {
             auto &i = insns[n];
             rerange(i, esimd);
-            auto &fi = *mask(i, flag, byteDstWA);
+            auto &fi = *mask(i, flag, esimd, byteDstWA);
             fi.invalidate();
         }
     }
