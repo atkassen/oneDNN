@@ -114,20 +114,6 @@ static bool isSubsetOf(DataType dt1, DataType dt2)
     return getBytes(dt1) < getBytes(dt2);
 }
 
-bool forceSIMD1(ngen::HW hw, const CopyInstruction &i) {
-    // Workaround for packed byte mov to odd-offset dst.
-    // Limiting SIMD avoids using a temporary to re-align data.
-    if (hw < HW::XeHPC) return false;
-    if (i.op != Opcode::mov) return false;
-    if (i.simd == 1) return false;
-    if (i.dst.kind != CopyOperand::GRF) return false;
-    if (!isB(i.dst.type) || !isB(i.src0.type)) return false;
-    if (i.dst.stride != 1) return false;
-    if ((i.dst.offset & 1) == 0) return false;
-    return true;
-};
-
-
 /***********************/
 /* CopyOperand methods */
 /***********************/
@@ -2700,6 +2686,19 @@ void CopyPlan::legalizeSIMD(bool initial)
     if (!initial)
         checkNoSubbytes();
 
+    auto forceSIMD1 = [&](const CopyInstruction &i) {
+        // Workaround for packed byte mov to odd-offset dst.
+        // Limiting SIMD avoids using a temporary to re-align data.
+        if (hw < HW::XeHPC) return false;
+        if (i.op != Opcode::mov) return false;
+        if (i.simd == 1) return false;
+        if (i.dst.kind != CopyOperand::GRF) return false;
+        if (!isB(i.dst.type) || !isB(i.src0.type)) return false;
+        if (i.dst.stride != 1) return false;
+        if ((i.dst.offset & 1) == 0) return false;
+        return true;
+    };
+
     // Basic rule: maximum of 2 registers per operand.
     auto opSimdMax = [&] (const CopyOperand &op, bool src2 = false) {
         if (op.kind != CopyOperand::GRF || op.stride == 0) return 64;
@@ -2746,7 +2745,7 @@ void CopyPlan::legalizeSIMD(bool initial)
         const int simd1 = std::min<int>(rounddown_pow2(i.simd), simdMax);
         int simd0 = simd1;
 
-        if (!initial && forceSIMD1(hw, i))
+        if (!initial && forceSIMD1(i))
             simd0 = 1;
 
         int minSimd0 = 1;
@@ -3346,7 +3345,6 @@ void CopyPlan::optimizeSIMD()
     };
 
     for (auto &i : insns) {
-        if (forceSIMD1(hw, i)) continue;
         auto tail = i.simd % 32;
         if (tail == rounddown_pow2(tail)) continue;
         auto simd0 = i.simd - tail;
@@ -3362,7 +3360,12 @@ void CopyPlan::optimizeSIMD()
 
     mergeChanges();
 
-    auto mask = [&](CopyInstruction &i0, CopyInstruction &i2, const CopyOperand &flag) {
+    auto mask = [&](CopyInstruction &i, const CopyOperand &flag, bool wa) {
+        const auto esimd = 2 * rounddown_pow2(i.simd);
+
+        auto ie = splitMultiple<5>(i);
+        auto &i0 = *ie[0], &i2 = *ie[4];
+
         const auto hasConversion = (i0.op != Opcode::mov)
                                 || (i0.dst.type != i0.src0.type)
                                 || (i0.flag && i0.cmod != ConditionModifier::none);
@@ -3375,18 +3378,52 @@ void CopyPlan::optimizeSIMD()
         } else  {
             i0.invalidate();
         }
+        i0.simd = esimd;
+
+        if (wa) {
+            ie[2]->simd = (esimd + 3) / 4;
+            ie[2]->op = Opcode::ror;
+            ie[2]->dst = tmp;
+            ie[2]->dst.type = DataType::ud;
+            ie[2]->src0 = ie[2]->dst;
+            ie[2]->src1 = 8;
+
+            ie[3]->simd = esimd / 4;
+            ie[3]->op = Opcode::mov;
+            ie[3]->dst = tmp;
+            ie[3]->dst.type = DataType::ub;
+            ie[3]->src0 = ie[3]->dst;
+            ie[3]->dst.stride = 4;
+            ie[3]->dst.offset += 4;
+        } else {
+            ie[2]->invalidate();
+            ie[3]->invalidate();
+        }
 
         i2.op = Opcode::mov;
+        i2.simd = esimd;
         i2.flag = flag;
         i2.dst = dst;
         i2.src0 = tmp;
         i2.src1 = i2.src2 = CopyOperand{};
+        i2.moveToIntegerPipe();
+
+        return ie[1];
     };
 
     const auto ninsns = insns.size();
     for (size_t n1 = 0; n1 < ninsns; n1++) {
         auto &i1 = insns[n1];
+
         if (i1.simd >= 32 || rounddown_pow2(i1.simd) == i1.simd) continue;
+
+        // The final move will be done in ub for byte-sized destination type,
+        // which requires a word-aligned destination (since stride = 1).
+        // See forceSIMD1 for rationale.
+        const bool byteDstWA = (getBits(i1.dst.type) == 8)
+             && (i1.dst.stride == 1)
+             && (i1.dst.offset & 1)
+             && (hw >= HW::XeHPC);
 
         size_t n2 = n1 + 1;
         auto range = i1.range;
@@ -3402,13 +3439,11 @@ void CopyPlan::optimizeSIMD()
         auto esimd = 2 * rounddown_pow2(simd);
         auto oflag = i1.flag;
         auto flag = newFlag(esimd);
-        auto value = (1u << simd) - 1;
+        auto value = ((1u << simd) - 1) << byteDstWA;
         flag.type = esimd > 16 ? DataType::ud : DataType::uw;
         rerange(i1, esimd);
 
-        auto ie1 = splitMultiple<3>(i1);
-        ie1[0]->simd = ie1[2]->simd = esimd;
-        auto &fi = *ie1[1];
+        auto &fi = *mask(i1, flag, byteDstWA);
 
         fi.simd = 1;
         fi.range = range;
@@ -3425,15 +3460,11 @@ void CopyPlan::optimizeSIMD()
         }
         fi.cmod = ConditionModifier::none;
 
-        mask(*ie1[0], *ie1[2], flag);
-
         for (size_t n = n1 + 1; n < n2; ++n, ++n1) {
             auto &i = insns[n];
             rerange(i, esimd);
-            auto ie = splitMultiple<3>(i);
-            ie[0]->simd = ie[2]->simd = esimd;
-            ie[1]->invalidate();
-            mask(*ie[0], *ie[2], flag);
+            auto &fi = *mask(i, flag, byteDstWA);
+            fi.invalidate();
         }
     }
 
