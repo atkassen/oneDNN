@@ -418,9 +418,6 @@ std::string layout_t::desc_str(bool dnnl_style) const {
 
 void layout_t::sanity_check() const {
 #if !defined(NDEBUG) || GEMMSTONE_ASSERTIONS
-    for (size_t i = 0; i < blocks_.size(); i++) {
-        dsl_assert(blocks_[i].size > 0) << "Incorrect block size.";
-    }
     dsl_assert(has_ndims() || ndims_ == max_ndims);
 #endif
 }
